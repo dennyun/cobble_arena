@@ -1,0 +1,7 @@
+.gradle/
+.gradle-bootstrap/
+build/
+libs/
+run/
+*.jar
+*.zip

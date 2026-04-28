@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "cobblemon_arena",
+  "version": "1.0.1",
+  "name": "Cobblemon Arena",
+  "description": "Cross-distance PvP matchmaking system for Cobblemon with visual simulation",
+  "authors": ["Raguto & Yemagh"],
+  "contact": {},
+  "license": "All Rights Reserved",
+  "icon": "icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["cobblemon.arena.fabric.CobblemonArenaFabric"],
+    "client": ["cobblemon.arena.fabric.CobblemonArenaFabricClient"],
+    "modmenu": ["cobblemon.arena.fabric.client.ModMenuIntegration"]
+  },
+  "mixins": ["cobblemon_arena.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.17.3",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*",
+    "cobblemon": ">=1.7.3"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}

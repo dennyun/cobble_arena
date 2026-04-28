@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Cobblemon-fabric-1.7.1+1.21.1">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/libs/Cobblemon-fabric-1.7.1+1.21.1.jar!/" />
+      <root url="jar://$PROJECT_DIR$/libs/fabric-1.7.1+1.21.1.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
