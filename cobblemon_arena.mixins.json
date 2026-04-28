@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "cobblemon.arena.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "minVersion": "0.8",
+  "client": [],
+  "mixins": [],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "refmap": "cobblemon_arena-common-common-refmap.json"
+}

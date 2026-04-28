@@ -1,0 +1,32 @@
+{
+  "mappings": {
+    "cobblemon/arena/mixin/client/FovEffectScaleMixin": {
+      "getFov": "Lnet/minecraft/class_757;method_3196(Lnet/minecraft/class_4184;FZ)D"
+    },
+    "cobblemon/arena/mixin/client/GameRendererMixin": {
+      "getFov(Lnet/minecraft/client/Camera;FZ)D": "Lnet/minecraft/class_757;method_3196(Lnet/minecraft/class_4184;FZ)D"
+    },
+    "cobblemon/arena/mixin/client/OptionsMixin": {
+      "get": "Lnet/minecraft/class_7172;method_41753()Ljava/lang/Object;"
+    },
+    "cobblemon/arena/mixin/client/ThirdPersonCameraMixin": {
+      "tick": "Lnet/minecraft/class_746;method_5773()V"
+    }
+  },
+  "data": {
+    "named:intermediary": {
+      "cobblemon/arena/mixin/client/FovEffectScaleMixin": {
+        "getFov": "Lnet/minecraft/class_757;method_3196(Lnet/minecraft/class_4184;FZ)D"
+      },
+      "cobblemon/arena/mixin/client/GameRendererMixin": {
+        "getFov(Lnet/minecraft/client/Camera;FZ)D": "Lnet/minecraft/class_757;method_3196(Lnet/minecraft/class_4184;FZ)D"
+      },
+      "cobblemon/arena/mixin/client/OptionsMixin": {
+        "get": "Lnet/minecraft/class_7172;method_41753()Ljava/lang/Object;"
+      },
+      "cobblemon/arena/mixin/client/ThirdPersonCameraMixin": {
+        "tick": "Lnet/minecraft/class_746;method_5773()V"
+      }
+    }
+  }
+}
