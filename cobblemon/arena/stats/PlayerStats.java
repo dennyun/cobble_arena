@@ -1,6 +1,7 @@
 package cobblemon.arena.stats;
 
 import cobblemon.arena.ladder.ArenaLadder;
+import cobblemon.arena.network.ArenaTransitionPokemonEntryPayload;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -13,6 +14,7 @@ import java.util.UUID;
 public class PlayerStats {
 
     private static final int DEFAULT_RANKED_RATING = 0;
+    private static final int MAX_RECENT_MATCHES = 10;
     private final UUID playerUUID;
     private String playerName;
     private int rankedRating;
@@ -172,7 +174,12 @@ public class PlayerStats {
         return (List<PlayerStats.RecentMatchStats>) (this.recentMatches !=
             null &&
         !this.recentMatches.isEmpty()
-            ? new ArrayList<>(this.recentMatches)
+            ? new ArrayList<>(
+                this.recentMatches.subList(
+                        0,
+                        Math.min(MAX_RECENT_MATCHES, this.recentMatches.size())
+                    )
+            )
             : List.of());
     }
 
@@ -263,7 +270,9 @@ public class PlayerStats {
         String opponentName,
         int ratingDelta,
         int ratingAfter,
-        List<PlayerStats.PokemonUsageRecordInput> teamPokemon
+        List<PlayerStats.PokemonUsageRecordInput> teamPokemon,
+        List<ArenaTransitionPokemonEntryPayload> ownTeam,
+        List<ArenaTransitionPokemonEntryPayload> opponentTeam
     ) {
         long playedAt = System.currentTimeMillis();
         this.addRecentMatch(
@@ -274,7 +283,9 @@ public class PlayerStats {
                 opponentName,
                 ratingDelta,
                 ratingAfter,
-                playedAt
+                playedAt,
+                ownTeam,
+                opponentTeam
             )
         );
         this.updatePokemonUsage(teamPokemon, won);
@@ -541,7 +552,7 @@ public class PlayerStats {
 
         this.recentMatches.add(0, match);
 
-        while (this.recentMatches.size() > 40) {
+        while (this.recentMatches.size() > MAX_RECENT_MATCHES) {
             this.recentMatches.remove(this.recentMatches.size() - 1);
         }
     }
@@ -569,13 +580,19 @@ public class PlayerStats {
                             normalizedKey,
                             ignored ->
                                 new PlayerStats.PokemonUsageStats(
-                                    entry.speciesName
+                                    entry.speciesName,
+                                    entry.speciesKey
                                 )
                         );
                     if (
                         usage.speciesName == null || usage.speciesName.isBlank()
                     ) {
                         usage.speciesName = entry.speciesName;
+                    }
+                    if (
+                        usage.speciesKey == null || usage.speciesKey.isBlank()
+                    ) {
+                        usage.speciesKey = entry.speciesKey;
                     }
 
                     usage.uses++;
@@ -748,8 +765,10 @@ public class PlayerStats {
 
     public static final class PokemonUsageRecordInput {
 
-        private final String speciesKey;
-        private final String speciesName;
+        /** Cobblemon resource ID, e.g. {@code "cobblemon:pikachu"}. */
+        public final String speciesKey;
+        /** Display name, e.g. {@code "Pikachu"}. */
+        public final String speciesName;
 
         public PokemonUsageRecordInput(String speciesKey, String speciesName) {
             this.speciesKey = speciesKey == null ? "" : speciesKey;
@@ -759,7 +778,8 @@ public class PlayerStats {
 
     public static final class PokemonUsageStats {
 
-        private String speciesName;
+        private String speciesKey = ""; // e.g. "cobblemon:pikachu"
+        private String speciesName = "";
         private int uses;
         private int wins;
         private int losses;
@@ -767,7 +787,16 @@ public class PlayerStats {
         public PokemonUsageStats() {}
 
         public PokemonUsageStats(String speciesName) {
-            this.speciesName = speciesName;
+            this.speciesName = speciesName != null ? speciesName : "";
+        }
+
+        public PokemonUsageStats(String speciesName, String speciesKey) {
+            this.speciesName = speciesName != null ? speciesName : "";
+            this.speciesKey = speciesKey != null ? speciesKey : "";
+        }
+
+        public String getSpeciesKey() {
+            return this.speciesKey;
         }
 
         public String getSpeciesName() {
@@ -839,6 +868,8 @@ public class PlayerStats {
         private int ratingDelta;
         private int ratingAfter;
         private long playedAtMs;
+        private List<ArenaTransitionPokemonEntryPayload> ownTeam = List.of();
+        private List<ArenaTransitionPokemonEntryPayload> opponentTeam = List.of();
 
         public RecentMatchStats() {}
 
@@ -849,7 +880,9 @@ public class PlayerStats {
             String opponentName,
             int ratingDelta,
             int ratingAfter,
-            long playedAtMs
+            long playedAtMs,
+            List<ArenaTransitionPokemonEntryPayload> ownTeam,
+            List<ArenaTransitionPokemonEntryPayload> opponentTeam
         ) {
             this.ranked = ranked;
             this.victory = victory;
@@ -858,6 +891,10 @@ public class PlayerStats {
             this.ratingDelta = ratingDelta;
             this.ratingAfter = ratingAfter;
             this.playedAtMs = playedAtMs;
+            this.ownTeam = ownTeam == null ? List.of() : List.copyOf(ownTeam);
+            this.opponentTeam = opponentTeam == null
+                ? List.of()
+                : List.copyOf(opponentTeam);
         }
 
         public boolean isRanked() {
@@ -886,6 +923,14 @@ public class PlayerStats {
 
         public long getPlayedAtMs() {
             return this.playedAtMs;
+        }
+
+        public List<ArenaTransitionPokemonEntryPayload> getOwnTeam() {
+            return this.ownTeam;
+        }
+
+        public List<ArenaTransitionPokemonEntryPayload> getOpponentTeam() {
+            return this.opponentTeam;
         }
     }
 }

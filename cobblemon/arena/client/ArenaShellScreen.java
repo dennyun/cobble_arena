@@ -14,6 +14,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -155,9 +156,10 @@ public final class ArenaShellScreen extends Screen {
     private static final int CHAT_MSG_AREA = CHAT_H - CHAT_INPUT_H - 20; // px for messages
     private net.minecraft.client.gui.widget.TextFieldWidget chatInput;
     private int chatScroll = 0; // 0 = newest at bottom
+    private int chatWrappedLineCount = 0; // total lines after word-wrap (used by mouseScrolled)
 
     // Leaderboard
-    private String lbFmt = "doubles";
+    private String lbFmt = "singles";
 
     // History
     private boolean hMatches = true;
@@ -335,13 +337,12 @@ public final class ArenaShellScreen extends Screen {
                 wx(c2x + 8),
                 wy(gT + PY_RANKED + 86),
                 ws(C2W - 16),
-                ws(16),
+                ws(14),
                 Text.literal("Fila Ranqueada"),
                 button -> {
                     String err = validatePartyForQueue();
                     if (err != null) {
-                        rankedValidationError = err;
-                        rankedValidationErrorMs = System.currentTimeMillis();
+                        showQueueValidationError(err);
                         return;
                     }
                     rankedValidationError = null;
@@ -397,14 +398,23 @@ public final class ArenaShellScreen extends Screen {
                 wx(c2x + 8),
                 wy(gT + PY_CASUAL + 60),
                 ws(C2W - 16),
-                ws(13),
+                ws(14),
                 Text.literal("Fila Rapida"),
                 button -> {
                     String err = validatePartyForQueue();
                     if (err != null) {
-                        casualValidationError = err;
-                        casualValidationErrorMs = System.currentTimeMillis();
+                        showQueueValidationError(err);
                         return;
+                    }
+                    // Extra Monotype validation: all 6 Pokemon must share a type
+                    if ("Monotype".equalsIgnoreCase(cFmt)) {
+                        String commonType = validateMonotypeTeam();
+                        if (commonType == null) {
+                            showQueueValidationError(
+                                "Monotype: todos devem ter um tipo em comum"
+                            );
+                            return;
+                        }
                     }
                     casualValidationError = null;
                     cancelQueueSent = false;
@@ -489,6 +499,21 @@ public final class ArenaShellScreen extends Screen {
         if (page != Page.PLAY) return;
         QueueStatusOverlay overlay = QueueStatusOverlay.getInstance();
         boolean inQueue = overlay.isVisible();
+
+        // ── Priority −1: match found ─────────────────────────────────────────
+        // When MatchFoundPacket arrives, clear the in-screen counter immediately.
+        // The QueueStatusOverlay continues showing its own "Partida encontrada!"
+        // HUD notification; we only remove the counter card from ArenaShellScreen.
+        if (ArenaClientState.consumeMatchFound()) {
+            pendingQueueJoinRanked = false;
+            pendingQueueJoinCasual = false;
+            pendingQueueStartMs = 0L;
+            cancelQueueSent = false;
+            queueInRanked = false;
+            queueInCasual = false;
+            buildWidgets();
+            return;
+        }
 
         // ── Priority 0: consume any queued rejection signal ──────────────────────
         // This check is placed OUTSIDE the pendingJoin block so stale signals
@@ -663,7 +688,32 @@ public final class ArenaShellScreen extends Screen {
         // so we pass the raw mx/my — no coordinate conversion needed.
         super.render(ctx, mx, my, delta);
 
-        QueueStatusOverlay.getInstance().render(ctx, width, height);
+        // Keep history modal above widgets so tab buttons from the base page
+        // never bleed into the battle-report details window.
+        if (page == Page.HISTORY && selectedMatchDetails != null) {
+            int gmx = guiX(mx);
+            int gmy = guiY(my);
+            if (gS < 1f) pushScale(ctx);
+            drawHistoryDetailsModal(
+                ctx,
+                gmx,
+                gmy,
+                gL + SB,
+                gT,
+                selectedMatchDetails
+            );
+            if (historyHoverTooltip != null) {
+                ctx.drawTooltip(
+                    textRenderer,
+                    historyHoverTooltip,
+                    gmx,
+                    gmy
+                );
+            }
+            if (gS < 1f) ctx.getMatrices().pop();
+        }
+
+        // Overlay notification is intentionally hidden while /arena is open.
     }
 
     // ── Panel base ────────────────────────────────────────────────────────────
@@ -927,34 +977,75 @@ public final class ArenaShellScreen extends Screen {
         t(c, "/g", x + w - 18, y + 4, T_MUT, 0.60f);
         c.fill(x + 4, y + 13, x + w - 4, y + 14, C_BDR);
 
-        // Message area (CHAT_MSG_AREA px tall)
+        // Message area with word-wrap
+        // ─────────────────────────────────────────────────────────────────────
+        // enableScissor() uses raw GUI coords and DOES NOT honour the pushScale()
+        // matrix, so we avoid it here.  Instead we clip by only rendering lines
+        // that fit inside msgAreaTop..msgAreaBot.
         int msgAreaTop = y + 15;
         int msgAreaBot = y + CHAT_H - CHAT_INPUT_H - 4;
-        int lineH = 9; // px per line at 0.62f scale
-        int visibleLines = (msgAreaBot - msgAreaTop) / lineH; // ≈ 8
+        int lineH = 9; // screen-pixels per line at 0.60f text scale
+        int visLines = Math.max(1, (msgAreaBot - msgAreaTop) / lineH);
 
-        java.util.List<String> all = ArenaChatState.getMessages();
-        int total = all.size();
-        // Bottom-align: show the last N lines, scroll offsets shift up
-        int startIdx = Math.max(0, total - visibleLines - chatScroll);
-        int endIdx = Math.max(0, total - chatScroll);
+        // Max font-pixels per line so text wraps before hitting the card edge.
+        // At scale 0.60f: screenPx = fontPx * 0.60  →  fontPx = screenPx / 0.60
+        int maxFontW = (int) ((w - 12) / 0.60f);
 
-        c.enableScissor(x + 2, msgAreaTop, x + w - 2, msgAreaBot);
+        // Build a flat list of wrapped OrderedText lines from all chat messages.
+        java.util.List<net.minecraft.text.OrderedText> wrappedLines =
+            new java.util.ArrayList<>();
+        for (String msg : ArenaChatState.getMessages()) {
+            if (msg == null || msg.isBlank()) {
+                wrappedLines.add(net.minecraft.text.OrderedText.EMPTY);
+                continue;
+            }
+            java.util.List<net.minecraft.text.OrderedText> chunks =
+                textRenderer.wrapLines(
+                    net.minecraft.text.Text.literal(msg),
+                    maxFontW
+                );
+            if (chunks.isEmpty()) {
+                wrappedLines.add(net.minecraft.text.OrderedText.EMPTY);
+            } else {
+                wrappedLines.addAll(chunks);
+            }
+        }
+
+        int total = wrappedLines.size();
+        // Store for mouseScrolled so it knows the real upper bound
+        chatWrappedLineCount = total;
+
+        // Clamp scroll so we can’t scroll past the oldest line
+        chatScroll = Math.max(
+            0,
+            Math.min(chatScroll, Math.max(0, total - visLines))
+        );
+
+        // Bottom-aligned window into the wrapped lines
+        int startIdx = Math.max(0, total - visLines - chatScroll);
+        int endIdx = Math.min(total, startIdx + visLines);
+
         int ly = msgAreaTop;
         for (int i = startIdx; i < endIdx; i++) {
-            String msg = all.get(i);
-            // Alternate row tint for readability
-            if (i % 2 == 0) c.fill(
-                x + 2,
-                ly,
-                x + w - 2,
-                ly + lineH - 1,
-                pa(20, 80, 60, 140)
-            );
-            tfit(c, msg, x + 4, ly + 1, w - 8, T_L, 0.60f);
+            net.minecraft.text.OrderedText line = wrappedLines.get(i);
+            // Alternate row tint
+            if (i % 2 == 0) {
+                c.fill(
+                    x + 2,
+                    ly,
+                    x + w - 5,
+                    ly + lineH - 1,
+                    pa(20, 80, 60, 140)
+                );
+            }
+            // Draw wrapped line at 0.60f scale
+            c.getMatrices().push();
+            c.getMatrices().translate(x + 4, ly + 1, 0f);
+            c.getMatrices().scale(0.60f, 0.60f, 1f);
+            c.drawText(textRenderer, line, 0, 0, T_L, false);
+            c.getMatrices().pop();
             ly += lineH;
         }
-        c.disableScissor();
 
         // Divider above input
         c.fill(
@@ -970,8 +1061,8 @@ public final class ArenaShellScreen extends Screen {
         c.fill(x + 2, inputY, x + w - 2, y + CHAT_H - 2, pa(80, 20, 16, 36));
         c.fill(x + 2, inputY, x + w - 2, inputY + 1, C_BDR2);
 
-        // Scrollbar (if more messages than visible)
-        if (total > visibleLines) {
+        // Scrollbar when there are more lines than visible
+        if (total > visLines) {
             scbar(
                 c,
                 x + w - 4,
@@ -979,7 +1070,7 @@ public final class ArenaShellScreen extends Screen {
                 3,
                 msgAreaBot - msgAreaTop,
                 chatScroll,
-                Math.max(1, total - visibleLines)
+                Math.max(1, total - visLines)
             );
         }
     }
@@ -1090,44 +1181,21 @@ public final class ArenaShellScreen extends Screen {
         // rFmtBtn ends at y+58 (h=14).  Divider at y+62.  Labels at y+66,
         // values at y+76 (≈y+83 at 0.80f scale).  Join button at y+86 (3 px gap).
         c.fill(x + 6, y + 62, x + w - 6, y + 63, C_BDR);
-        // Auto-clear validation error after timeout
-        if (
-            rankedValidationError != null &&
-            System.currentTimeMillis() - rankedValidationErrorMs >
-            VALIDATION_ERROR_TIMEOUT_MS
-        ) {
-            rankedValidationError = null;
-        }
-        // If party is invalid, replace stats row with the error message (no overlap).
-        if (rankedValidationError != null) {
-            c.fill(x + 6, y + 64, x + w - 6, y + 82, pa(35, 208, 70, 78));
-            c.fill(x + 6, y + 64, x + w - 6, y + 65, pa(80, 208, 70, 78));
-            tfit(
-                c,
-                rankedValidationError,
-                x + 10,
-                y + 68,
-                w - 20,
-                A_RED,
-                0.62f
-            );
-        } else {
-            stat3(
-                c,
-                x + 8,
-                y + 66,
-                w - 16,
-                new String[] { "Rating", "Tier", "Recorde" },
-                new String[] {
-                    "" + elo,
-                    shortTier(ArenaClientState.getRankTitle()),
-                    ArenaClientState.getRankedWins() +
-                    "-" +
-                    ArenaClientState.getRankedLosses(),
-                },
-                new int[] { T_PUR, T_W, T_W }
-            );
-        }
+        stat3(
+            c,
+            x + 8,
+            y + 66,
+            w - 16,
+            new String[] { "Rating", "Tier", "Recorde" },
+            new String[] {
+                "" + elo,
+                shortTier(ArenaClientState.getRankTitle()),
+                ArenaClientState.getRankedWins() +
+                "-" +
+                ArenaClientState.getRankedLosses(),
+            },
+            new int[] { T_PUR, T_W, T_W }
+        );
         // rankedQueueButton widget rendered at y+86 (buildPlayWidgets)
     }
 
@@ -1165,18 +1233,6 @@ public final class ArenaShellScreen extends Screen {
         t(c, "Nivel", x + 76, y + 34, T_DIM, 0.60f);
         // cFmtBtn (w=60) at x+10, cLvlBtn (w=52) at x+74 — both h=14
         // casualQueueButton at y+60, h=13 (ends y+73; 3 px bottom pad)
-        // Auto-clear validation error after timeout
-        if (
-            casualValidationError != null &&
-            System.currentTimeMillis() - casualValidationErrorMs >
-            VALIDATION_ERROR_TIMEOUT_MS
-        ) {
-            casualValidationError = null;
-        }
-        if (casualValidationError != null) {
-            c.fill(x + 6, y + 43, x + w - 6, y + 58, pa(120, 208, 70, 78));
-            tfit(c, casualValidationError, x + 10, y + 46, w - 20, T_W, 0.58f);
-        }
     }
 
     // ── Queue counter card ──────────────────────────────────────────────────────
@@ -1610,7 +1666,11 @@ public final class ArenaShellScreen extends Screen {
         t(c, "ELO", cx + CW - 90, hdrY + 4, T_DIM, 0.64f);
         t(c, "WIN RATE", cx + CW - 46, hdrY + 4, T_DIM, 0.64f);
 
-        List<String> entries = ArenaClientState.getLeaderboardEntries();
+        // Use lbFmt ("singles"/"doubles"/"triples") to get the correct
+        // ladder's leaderboard, not just the current selected ladder.
+        List<String> entries = ArenaClientState.getLeaderboardEntriesForFormat(
+            lbFmt
+        );
         String me = ArenaClientState.getPlayerName();
         int rowY = hdrY + 17,
             maxY = cy + H - 24;
@@ -1621,6 +1681,12 @@ public final class ArenaShellScreen extends Screen {
             String nm = p.length > 0 ? p[0].trim() : raw;
             String els = p.length > 1 ? p[1].replace("Elo", "").trim() : "?";
             String wl = p.length > 2 ? p[2].trim() : "0-0";
+            UUID playerUuid = null;
+            if (p.length > 3) {
+                try {
+                    playerUuid = UUID.fromString(p[3].trim());
+                } catch (Exception ignored) {}
+            }
             int ev = pInt(els, 1000);
             String[] wlp = wl.split("-");
             int wv = pInt(wlp.length > 0 ? wlp[0] : "0", 0);
@@ -1639,15 +1705,16 @@ public final class ArenaShellScreen extends Screen {
                 i == 0 ? "1." : i == 1 ? "2." : i == 2 ? "3." : (i + 1) + ".";
             int pc = i == 0 ? A_GOLD : i == 1 ? T_L : i == 2 ? A_ORG : T_DIM;
             t(c, pos, cx + 12, rowY + 4, pc, 0.70f);
+            drawLeaderboardHead(c, cx + 24, rowY + 2, 12, playerUuid, nm);
 
             // Name
-            tfit(c, nm, cx + 32, rowY + 4, 142, isMe ? T_PUR : T_W, 0.76f);
+            tfit(c, nm, cx + 40, rowY + 4, 134, isMe ? T_PUR : T_W, 0.76f);
             if (isMe) {
                 int nw = Math.round(textRenderer.getWidth(nm) * 0.76f);
                 t(
                     c,
                     "Voce",
-                    cx + 32 + nw + 4,
+                    cx + 40 + nw + 4,
                     rowY + 4,
                     pa(200, 108, 62, 230),
                     0.60f
@@ -1679,11 +1746,53 @@ public final class ArenaShellScreen extends Screen {
         );
     }
 
+    private void drawLeaderboardHead(
+        DrawContext c,
+        int x,
+        int y,
+        int size,
+        UUID uuid,
+        String name
+    ) {
+        net.minecraft.util.Identifier skinId = null;
+        net.minecraft.client.MinecraftClient mc =
+            net.minecraft.client.MinecraftClient.getInstance();
+        if (uuid != null && mc.getNetworkHandler() != null) {
+            net.minecraft.client.network.PlayerListEntry entry =
+                mc.getNetworkHandler().getPlayerListEntry(uuid);
+            if (entry != null) {
+                skinId = entry.getSkinTextures().texture();
+            }
+        }
+        if (skinId == null && uuid != null) {
+            skinId = net.minecraft.client.util.DefaultSkinHelper.getTexture();
+        }
+        if (skinId == null) {
+            c.fill(x, y, x + size, y + size, pa(180, 80, 58, 120));
+            String initial = name != null && !name.isBlank()
+                ? name.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
+                : "?";
+            tc(c, initial, x + size / 2, y + 2, T_W, 0.58f);
+            return;
+        }
+
+        float s = size / 8f;
+        c.getMatrices().push();
+        c.getMatrices().translate(x, y, 0f);
+        c.getMatrices().scale(s, s, 1f);
+        c.drawTexture(skinId, 0, 0, 8f, 8f, 8, 8, 64, 64);
+        c.drawTexture(skinId, 0, 0, 40f, 8f, 8, 8, 64, 64);
+        c.getMatrices().pop();
+    }
+
     // =========================================================================
     // PAGE: HISTORY
     // =========================================================================
 
     private void renderHistory(DrawContext c, int mx, int my, int cx, int cy) {
+        // Reset tooltip each frame; pokeRow() sets it when mouse hovers a row
+        historyHoverTooltip = null;
+        historyMatchHits.clear();
         t(c, "Historico de Partidas", cx + 8, cy + 10, T_W, 1.0f);
         t(c, "Suas ultimas batalhas", cx + 8, cy + 23, T_DIM, 0.68f);
 
@@ -1705,8 +1814,9 @@ public final class ArenaShellScreen extends Screen {
         if (hMatches) {
             List<ArenaMatchHistoryEntryPayload> ent =
                 ArenaClientState.getRecentMatchHistory();
+            int rowIndex = 0;
             for (ArenaMatchHistoryEntryPayload e : ent) {
-                matchRow(c, cx + 8, ry, CW - 16, e);
+                matchRow(c, cx + 8, ry, CW - 16, e, rowIndex++);
                 ry += 44;
             }
             if (ent.isEmpty()) tc(
@@ -1734,8 +1844,8 @@ public final class ArenaShellScreen extends Screen {
             t(c, "Taxa", cx + CW - 28, ry + 3, T_DIM, 0.62f);
             ry += 15;
             for (int i = 0; i < ent.size(); i++) {
-                pokeRow(c, cx + 8, ry, CW - 16, i + 1, ent.get(i));
-                ry += 18;
+                pokeRow(c, cx + 8, ry, CW - 16, i + 1, ent.get(i), mx, my);
+                ry += POKE_ROW_H;
             }
             if (ent.isEmpty()) tc(
                 c,
@@ -1748,8 +1858,17 @@ public final class ArenaShellScreen extends Screen {
             hScr = MathHelper.clamp(
                 hScr,
                 0,
-                Math.max(0, ent.size() * 18 + 15 - conH)
+                Math.max(0, ent.size() * POKE_ROW_H + 15 - conH)
             );
+            // Draw tooltip after all rows (on top)
+            if (historyHoverTooltip != null) {
+                c.drawTooltip(
+                    textRenderer,
+                    historyHoverTooltip,
+                    historyHoverTooltipX,
+                    historyHoverTooltipY
+                );
+            }
         }
         c.disableScissor();
 
@@ -1760,7 +1879,9 @@ public final class ArenaShellScreen extends Screen {
               )
             : Math.max(
                   0,
-                  ArenaClientState.getPokemonUsage().size() * 18 + 15 - conH
+                  ArenaClientState.getPokemonUsage().size() * POKE_ROW_H +
+                      15 -
+                      conH
               );
         if (maxS > 0) scbar(c, cx + CW - 6, conY, 4, conH, hScr, maxS);
     }
@@ -1770,7 +1891,8 @@ public final class ArenaShellScreen extends Screen {
         int x,
         int y,
         int w,
-        ArenaMatchHistoryEntryPayload e
+        ArenaMatchHistoryEntryPayload e,
+        int rowIndex
     ) {
         boolean win = e.victory();
         c.fill(x, y, x + w, y + 40, C_CARD);
@@ -1841,7 +1963,23 @@ public final class ArenaShellScreen extends Screen {
             );
         }
         c.fill(x, y + 39, x + w, y + 40, C_BDR);
+        historyMatchHits.add(new Hit("match_" + rowIndex, x, y, w, 40));
     }
+
+    // Cache of FloatingState for Pokemon models in the history/usage tab.
+    private final java.util.Map<
+        String,
+        com.cobblemon.mod.common.client.render.models.blockbench.FloatingState
+    > historyPokeStates = new java.util.HashMap<>();
+    // Tooltip queued for rendering this frame by pokeRow()
+    private java.util.List<net.minecraft.text.Text> historyHoverTooltip = null;
+    private int historyHoverTooltipX = 0,
+        historyHoverTooltipY = 0;
+    private final List<Hit> historyMatchHits = new ArrayList<>();
+    private ArenaMatchHistoryEntryPayload selectedMatchDetails = null;
+
+    /** Row height for the Pokemon usage list (must fit the 3-D model cleanly). */
+    private static final int POKE_ROW_H = 38;
 
     private void pokeRow(
         DrawContext c,
@@ -1849,28 +1987,299 @@ public final class ArenaShellScreen extends Screen {
         int y,
         int w,
         int rank,
-        ArenaPokemonUsageEntryPayload e
+        ArenaPokemonUsageEntryPayload e,
+        int mx,
+        int my
     ) {
+        // Row background
         c.fill(
             x,
             y,
             x + w,
-            y + 16,
+            y + POKE_ROW_H,
             rank % 2 == 0 ? pa(180, 20, 16, 34) : pa(110, 16, 12, 28)
         );
-        t(c, "#" + rank, x + 6, y + 4, rank <= 3 ? A_GOLD : T_DIM, 0.66f);
-        tfit(c, e.speciesName(), x + 26, y + 4, w - 148, T_W, 0.74f);
-        t(c, "" + e.uses(), x + w - 110, y + 4, T_DIM, 0.64f);
-        t(c, e.wins() + "W " + e.losses() + "L", x + w - 74, y + 4, T_L, 0.64f);
+
+        // ── Pokemon model (left side, 28x28) ────────────────────────────────
+        String speciesKey = e.speciesKey();
+        if (speciesKey != null && !speciesKey.isBlank()) {
+            try {
+                net.minecraft.util.Identifier specId =
+                    net.minecraft.util.Identifier.of(speciesKey);
+                com.cobblemon.mod.common.client.render.models.blockbench.FloatingState state =
+                    historyPokeStates.computeIfAbsent(speciesKey, k ->
+                        new com.cobblemon.mod.common.client.render.models.blockbench.FloatingState()
+                    );
+                org.joml.Quaternionf rot =
+                    new org.joml.Quaternionf().rotationXYZ(
+                        0f,
+                        (float) Math.toRadians(20),
+                        0f
+                    );
+                c.getMatrices().push();
+                // Centre the model in the 38-px row:
+                // scale 2.0 → model ~24 px tall → offset (38-24)/2 = 7 px
+                c.getMatrices().translate(x + 18f, y + 7f, 0f);
+                c.getMatrices().scale(2.0f, 2.0f, 1f);
+                com.cobblemon.mod.common.client.gui.PokemonGuiUtilsKt.drawProfilePokemon(
+                    specId,
+                    c.getMatrices(),
+                    rot,
+                    com.cobblemon.mod.common.entity.PoseType.PROFILE,
+                    state,
+                    0f,
+                    4.5f,
+                    true,
+                    false,
+                    false,
+                    1f,
+                    1f,
+                    1f,
+                    1f,
+                    0f,
+                    0f
+                );
+                c.getMatrices().pop();
+            } catch (Exception ignored) {
+                // fallback: show rank number
+                t(
+                    c,
+                    "#" + rank,
+                    x + 6,
+                    y + 10,
+                    rank <= 3 ? A_GOLD : T_DIM,
+                    0.66f
+                );
+            }
+        } else {
+            t(c, "#" + rank, x + 6, y + 10, rank <= 3 ? A_GOLD : T_DIM, 0.66f);
+        }
+
+        // ── Text columns ─────────────────────────────────────────────────────
+        int textX = x + 30;
+        tfit(c, e.speciesName(), textX, y + 4, w - 170, T_W, 0.76f);
+        t(c, e.uses() + "x", x + w - 116, y + 4, T_DIM, 0.64f);
+        t(c, e.wins() + "W " + e.losses() + "L", x + w - 78, y + 4, T_L, 0.64f);
         int wr = e.uses() > 0 ? Math.round((e.wins() * 100f) / e.uses()) : 0;
         t(
             c,
             wr + "%",
-            x + w - 22,
+            x + w - 26,
             y + 4,
             wr >= 60 ? A_GREEN : wr >= 45 ? A_GOLD : A_RED,
             0.64f
         );
+
+        // Rank badge (below name)
+        t(c, "#" + rank, textX, y + 17, rank <= 3 ? A_GOLD : T_MUT, 0.58f);
+
+        // ── Hover tooltip ─────────────────────────────────────────────────
+        if (over(mx, my, x, y, w, POKE_ROW_H)) {
+            java.util.List<net.minecraft.text.Text> tip =
+                new java.util.ArrayList<>();
+            tip.add(
+                net.minecraft.text.Text.literal(e.speciesName()).formatted(
+                    net.minecraft.util.Formatting.WHITE,
+                    net.minecraft.util.Formatting.BOLD
+                )
+            );
+            tip.add(
+                net.minecraft.text.Text.literal(
+                    "Usos: " +
+                        e.uses() +
+                        "  |  " +
+                        e.wins() +
+                        "V " +
+                        e.losses() +
+                        "D"
+                ).formatted(net.minecraft.util.Formatting.GRAY)
+            );
+            tip.add(
+                net.minecraft.text.Text.literal(
+                    "Taxa de vitoria: " + wr + "%"
+                ).formatted(
+                    wr >= 60
+                        ? net.minecraft.util.Formatting.GREEN
+                        : wr >= 45
+                            ? net.minecraft.util.Formatting.YELLOW
+                            : net.minecraft.util.Formatting.RED
+                )
+            );
+            historyHoverTooltip = tip;
+            historyHoverTooltipX = mx;
+            historyHoverTooltipY = my;
+        }
+
+        c.fill(x, y + POKE_ROW_H - 1, x + w, y + POKE_ROW_H, C_BDR);
+    }
+
+    private void drawHistoryDetailsModal(
+        DrawContext c,
+        int mx,
+        int my,
+        int cx,
+        int cy,
+        ArenaMatchHistoryEntryPayload match
+    ) {
+        int mw = CW - 28;
+        int mh = H - 34;
+        int x = cx + (CW - mw) / 2;
+        int y = cy + 17;
+        c.fill(x, y, x + mw, y + mh, pa(242, 10, 8, 18));
+        c.fill(x, y, x + mw, y + 1, C_BDR2);
+        c.fill(x, y + mh - 1, x + mw, y + mh, C_BDR);
+        c.fill(x, y, x + 1, y + mh, C_BDR2);
+        c.fill(x + mw - 1, y, x + mw, y + mh, C_BDR);
+
+        String result = match.victory() ? "Vitoria" : "Derrota";
+        t(c, "Detalhes da Partida", x + 10, y + 8, T_W, 0.90f);
+        t(
+            c,
+            result + " vs " + match.opponentName(),
+            x + 10,
+            y + 20,
+            match.victory() ? A_GREEN : A_RED,
+            0.74f
+        );
+        t(c, match.ladderDisplayName(), x + 10, y + 30, T_DIM, 0.64f);
+        if (match.ranked()) {
+            int d = match.ratingDelta();
+            t(
+                c,
+                "ELO: " +
+                match.ratingAfter() +
+                " (" +
+                (d >= 0 ? "+" : "") +
+                d +
+                ")",
+                x + 10,
+                y + 40,
+                T_L,
+                0.64f
+            );
+        }
+        t(c, "Clique fora para fechar", x + mw - 100, y + 8, T_DIM, 0.58f);
+
+        drawHistoryTeamSection(c, mx, my, x + 10, y + 54, mw - 20, "Seu Time", match.ownTeam());
+        drawHistoryTeamSection(
+            c,
+            mx,
+            my,
+            x + 10,
+            y + 126,
+            mw - 20,
+            "Time Oponente",
+            match.opponentTeam()
+        );
+    }
+
+    private void drawHistoryTeamSection(
+        DrawContext c,
+        int mx,
+        int my,
+        int x,
+        int y,
+        int w,
+        String title,
+        List<cobblemon.arena.network.ArenaTransitionPokemonEntryPayload> team
+    ) {
+        c.fill(x, y, x + w, y + 64, pa(115, 20, 16, 34));
+        c.fill(x, y, x + w, y + 1, C_BDR);
+        t(c, title, x + 6, y + 4, T_DIM, 0.60f);
+        int sx = x + 6;
+        int sy = y + 16;
+        int size = 22;
+        int gap = 4;
+        int max = Math.min(6, team.size());
+        for (int i = 0; i < max; i++) {
+            var p = team.get(i);
+            int px = sx + i * (size + gap);
+            c.fill(px, sy, px + size, sy + size, pa(180, 30, 26, 50));
+            String spName = p.speciesName() != null ? p.speciesName() : "?";
+            boolean rendered = false;
+            String speciesKey = p.speciesKey();
+            if (speciesKey != null && !speciesKey.isBlank()) {
+                try {
+                    net.minecraft.util.Identifier specId =
+                        net.minecraft.util.Identifier.of(speciesKey);
+                    com.cobblemon.mod.common.client.render.models.blockbench.FloatingState state =
+                        historyPokeStates.computeIfAbsent(speciesKey, k ->
+                            new com.cobblemon.mod.common.client.render.models.blockbench.FloatingState()
+                        );
+                    org.joml.Quaternionf rot =
+                        new org.joml.Quaternionf().rotationXYZ(
+                            0f,
+                            (float) Math.toRadians(20),
+                            0f
+                        );
+                    c.getMatrices().push();
+                    c.getMatrices().translate(px + size / 2f, sy + 3f, 0f);
+                    c.getMatrices().scale(1.35f, 1.35f, 1f);
+                    com.cobblemon.mod.common.client.gui.PokemonGuiUtilsKt.drawProfilePokemon(
+                        specId,
+                        c.getMatrices(),
+                        rot,
+                        com.cobblemon.mod.common.entity.PoseType.PROFILE,
+                        state,
+                        0f,
+                        4.5f,
+                        true,
+                        false,
+                        false,
+                        1f,
+                        1f,
+                        1f,
+                        1f,
+                        0f,
+                        0f
+                    );
+                    c.getMatrices().pop();
+                    rendered = true;
+                } catch (Exception ignored) {}
+            }
+            if (!rendered) {
+                String label = spName.substring(0, Math.min(3, spName.length()));
+                t(c, label, px + 3, sy + 8, T_W, 0.54f);
+            }
+            if (over(mx, my, px, sy, size, size)) {
+                List<net.minecraft.text.Text> tip = new ArrayList<>();
+                tip.add(
+                    net.minecraft.text.Text.literal(spName).formatted(
+                        net.minecraft.util.Formatting.WHITE
+                    )
+                );
+                if (!p.abilityName().isBlank()) tip.add(
+                    net.minecraft.text.Text.literal(
+                        "Hab: " + p.abilityName()
+                    ).formatted(net.minecraft.util.Formatting.GRAY)
+                );
+                if (!p.heldItemName().isBlank()) tip.add(
+                    net.minecraft.text.Text.literal(
+                        "Item: " + p.heldItemName()
+                    ).formatted(net.minecraft.util.Formatting.GRAY)
+                );
+                if (!p.natureName().isBlank()) tip.add(
+                    net.minecraft.text.Text.literal(
+                        "Nat: " + p.natureName()
+                    ).formatted(net.minecraft.util.Formatting.GRAY)
+                );
+                if (!p.moveNames().isEmpty()) {
+                    tip.add(
+                        net.minecraft.text.Text.literal("Golpes:").formatted(
+                            net.minecraft.util.Formatting.DARK_AQUA
+                        )
+                    );
+                    for (String move : p.moveNames()) tip.add(
+                        net.minecraft.text.Text.literal(" - " + move).formatted(
+                            net.minecraft.util.Formatting.GRAY
+                        )
+                    );
+                }
+                historyHoverTooltip = tip;
+                historyHoverTooltipX = mx;
+                historyHoverTooltipY = my;
+            }
+        }
     }
 
     // =========================================================================
@@ -2157,6 +2566,33 @@ public final class ArenaShellScreen extends Screen {
                 }
             }
 
+            // ── History: open/close match details ───────────────────────────
+            if (page == Page.HISTORY && hMatches) {
+                if (selectedMatchDetails != null) {
+                    int cx = gL + SB;
+                    int mw = CW - 28;
+                    int mh = H - 34;
+                    int mx0 = cx + (CW - mw) / 2;
+                    int my0 = gT + 17;
+                    if (!over(gx, gy, mx0, my0, mw, mh)) {
+                        selectedMatchDetails = null;
+                        return true;
+                    }
+                } else {
+                    List<ArenaMatchHistoryEntryPayload> history =
+                        ArenaClientState.getRecentMatchHistory();
+                    for (Hit h : historyMatchHits) {
+                        if (over(gx, gy, h.x, h.y, h.w, h.h)) {
+                            int idx = pInt(h.id.replace("match_", ""), -1);
+                            if (idx >= 0 && idx < history.size()) {
+                                selectedMatchDetails = history.get(idx);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Missions: claim buttons ────────────────────────────────────
             if (page == Page.MISSIONS) for (Hit h : hits)
                 if (over(gx, gy, h.x, h.y, h.w, h.h)) {
@@ -2184,10 +2620,10 @@ public final class ArenaShellScreen extends Screen {
             gy >= gT + PY_COLS &&
             gy < gT + PY_COLS + CHAT_H
         ) {
-            int maxScroll = Math.max(
-                0,
-                ArenaChatState.getMessages().size() - 8
-            );
+            // Use chatWrappedLineCount (set by drawChatPanel each frame) so the
+            // scroll limit accounts for word-wrapped multi-line messages.
+            int visLines = Math.max(1, (CHAT_H - CHAT_INPUT_H - 20) / 9);
+            int maxScroll = Math.max(0, chatWrappedLineCount - visLines);
             chatScroll = Math.max(
                 0,
                 Math.min(maxScroll, chatScroll - scrollDir)
@@ -2265,7 +2701,13 @@ public final class ArenaShellScreen extends Screen {
             try {
                 net.minecraft.item.ItemStack held = p.heldItem();
                 if (held != null && !held.isEmpty()) {
-                    String itemId = held.getItem().toString();
+                    net.minecraft.util.Identifier itemIdObj =
+                        net.minecraft.registry.Registries.ITEM.getId(
+                            held.getItem()
+                        );
+                    String itemId = itemIdObj != null
+                        ? itemIdObj.toString()
+                        : held.getItem().toString();
                     if (!seenItems.add(itemId)) {
                         return "Item repetido: " + itemId;
                     }
@@ -2275,7 +2717,86 @@ public final class ArenaShellScreen extends Screen {
             }
         }
 
+        // 4. No duplicate species
+        java.util.Set<String> seenSpecies = new java.util.HashSet<>();
+        for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
+            if (p == null) continue;
+            try {
+                String speciesId = p
+                    .getSpecies()
+                    .getResourceIdentifier()
+                    .toString()
+                    .toLowerCase(java.util.Locale.ROOT);
+                if (!seenSpecies.add(speciesId)) {
+                    return "Pokemon repetido: " + speciesId;
+                }
+            } catch (Exception ignored) {}
+        }
+
         return null; // party is valid
+    }
+
+    private void drawValidationToast(
+        DrawContext c,
+        int x,
+        int y,
+        int w,
+        String message,
+        long shownAtMs
+    ) {
+        if (message == null || message.isBlank() || shownAtMs <= 0L) return;
+        long elapsed = System.currentTimeMillis() - shownAtMs;
+        if (elapsed > VALIDATION_ERROR_TIMEOUT_MS) return;
+        float t = elapsed / (float) VALIDATION_ERROR_TIMEOUT_MS;
+        float alpha = t < 0.7f ? 1.0f : Math.max(0.0f, (1.0f - t) / 0.3f);
+        int a = Math.max(45, Math.min(170, (int) (170 * alpha)));
+        c.fill(x, y, x + w, y + 15, pa(a, 208, 70, 78));
+        c.fill(x, y, x + w, y + 1, pa(Math.min(255, a + 40), 255, 180, 180));
+        tfit(c, message, x + 4, y + 4, w - 8, T_W, 0.58f);
+    }
+
+    private void showQueueValidationError(String message) {
+        String cleaned = message == null ? "" : message.trim();
+        if (cleaned.isBlank()) return;
+        rankedValidationError = null;
+        casualValidationError = null;
+        rankedValidationErrorMs = 0L;
+        casualValidationErrorMs = 0L;
+        ArenaChatState.addMessage("[Arena] Restricao de fila: " + cleaned);
+    }
+
+    /**
+     * Additional validation for Monotype casual mode:
+     * all 6 Pokémon must share at least ONE common type.
+     * Returns the common type key if valid, or {@code null} if the team is
+     * not monotype.
+     */
+    private String validateMonotypeTeam() {
+        java.util.List<com.cobblemon.mod.common.pokemon.Pokemon> party =
+            ArenaClientState.getPartyPreview();
+        // Collect types shared by ALL non-null Pokemon
+        java.util.Set<String> commonTypes = null;
+        for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
+            if (p == null) continue;
+            try {
+                java.util.Set<String> pokeTypes = new java.util.HashSet<>();
+                var primary = p.getSpecies().getPrimaryType();
+                if (primary != null) pokeTypes.add(
+                    primary.getName().toLowerCase(java.util.Locale.ROOT)
+                );
+                var secondary = p.getSpecies().getSecondaryType();
+                if (secondary != null) pokeTypes.add(
+                    secondary.getName().toLowerCase(java.util.Locale.ROOT)
+                );
+                if (commonTypes == null) {
+                    commonTypes = new java.util.HashSet<>(pokeTypes);
+                } else {
+                    commonTypes.retainAll(pokeTypes);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (commonTypes == null || commonTypes.isEmpty()) return null;
+        return commonTypes.iterator().next(); // e.g. "fire"
     }
 
     private void drawPlayerHead(DrawContext c, int x, int y, int size) {

@@ -1,11 +1,18 @@
 package cobblemon.arena.client;
 
 import cobblemon.arena.network.ArenaTransitionPokemonEntryPayload;
+import com.cobblemon.mod.common.client.gui.PokemonGuiUtilsKt;
+import com.cobblemon.mod.common.client.render.models.blockbench.FloatingState;
+import com.cobblemon.mod.common.entity.PoseType;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.util.Identifier;
+import org.joml.Quaternionf;
 
 /**
  * Fullscreen overlay shown during the arena lead-selection transition.
@@ -19,10 +26,10 @@ public final class ArenaBattleTransitionOverlay {
         new ArenaBattleTransitionOverlay();
 
     // ── Layout constants ─────────────────────────────────────────────────────────
-    /** Size of each Pokémon slot box in pixels. */
-    private static final int SLOT_SIZE = 36;
+    /** Size of each Pokémon slot box in pixels (matches ArenaPartyPreviewRenderer). */
+    private static final int SLOT_SIZE = 52;
     /** Gap between slot boxes. */
-    private static final int SLOT_GAP = 6;
+    private static final int SLOT_GAP = 5;
     /** Number of slot columns per player side. */
     private static final int SLOT_COLS = 3;
 
@@ -57,6 +64,18 @@ public final class ArenaBattleTransitionOverlay {
     private List<ArenaTransitionPokemonEntryPayload> rightTeam = List.of();
     private int durationTicks = 120;
     private int remainingTicks;
+    /** Number of leads to select: 1 = singles, 2 = doubles, 3 = triples. */
+    private int leadsRequired = 1;
+    /** Slots selected by the local player (index into leftTeam). */
+    private final java.util.List<Integer> selectedOwnSlots =
+        new java.util.ArrayList<>();
+
+    // One FloatingState per slot per team so Cobblemon’s model animator has
+    // per-slot state (pose, animation tick, etc.).
+    private final Map<Integer, FloatingState> leftStates = new HashMap<>();
+    private final Map<Integer, FloatingState> rightStates = new HashMap<>();
+    // Partial-tick value forwarded from the last render() call, used in drawSlot.
+    private float lastPartialTick = 0f;
 
     private ArenaBattleTransitionOverlay() {}
 
@@ -75,6 +94,28 @@ public final class ArenaBattleTransitionOverlay {
         List<ArenaTransitionPokemonEntryPayload> rightTeam,
         int durationTicks
     ) {
+        start(
+            leftName,
+            leftPlayerUuid,
+            rightName,
+            rightPlayerUuid,
+            leftTeam,
+            rightTeam,
+            durationTicks,
+            "singles"
+        );
+    }
+
+    public void start(
+        String leftName,
+        String leftPlayerUuid,
+        String rightName,
+        String rightPlayerUuid,
+        List<ArenaTransitionPokemonEntryPayload> leftTeam,
+        List<ArenaTransitionPokemonEntryPayload> rightTeam,
+        int durationTicks,
+        String battleTypeId
+    ) {
         this.leftName = leftName != null ? leftName : "";
         this.rightName = rightName != null ? rightName : "";
         this.leftPlayerUuid = parseUuid(leftPlayerUuid);
@@ -84,6 +125,22 @@ public final class ArenaBattleTransitionOverlay {
         this.durationTicks = Math.max(1, durationTicks);
         this.remainingTicks = this.durationTicks;
         this.active = true;
+        this.selectedOwnSlots.clear();
+        this.leadsRequired = switch (
+            battleTypeId != null
+                ? battleTypeId.toLowerCase(java.util.Locale.ROOT)
+                : ""
+        ) {
+            case "doubles" -> 2;
+            case "triples" -> 3;
+            default -> 1;
+        };
+        leftStates.clear();
+        rightStates.clear();
+        for (int i = 0; i < 6; i++) {
+            leftStates.put(i, new FloatingState());
+            rightStates.put(i, new FloatingState());
+        }
     }
 
     public void tick() {
@@ -109,6 +166,43 @@ public final class ArenaBattleTransitionOverlay {
     }
 
     // ── Hit-detection ────────────────────────────────────────────────────────────
+
+    public int getLeadsRequired() {
+        return leadsRequired;
+    }
+
+    public java.util.List<Integer> getSelectedOwnSlots() {
+        return java.util.Collections.unmodifiableList(selectedOwnSlots);
+    }
+
+    public boolean hasAllLeadsSelected() {
+        return selectedOwnSlots.size() >= leadsRequired;
+    }
+
+    public int getSelectedOwnCount() {
+        return selectedOwnSlots.size();
+    }
+
+    /**
+     * Toggles slot selection.  If the slot is already selected it is deselected;
+     * otherwise it is added (up to {@link #leadsRequired} slots max).
+     * Returns {@code true} if the selection changed.
+     */
+    public boolean toggleOwnSlot(int slotIndex) {
+        if (!hasOwnPokemonAt(slotIndex)) return false;
+        if (selectedOwnSlots.contains(slotIndex)) {
+            selectedOwnSlots.remove((Integer) slotIndex);
+            return true;
+        }
+        if (selectedOwnSlots.size() < leadsRequired) {
+            selectedOwnSlots.add(slotIndex);
+            return true;
+        }
+        // Replace the oldest selection when at capacity (singles = just replace)
+        selectedOwnSlots.remove(0);
+        selectedOwnSlots.add(slotIndex);
+        return true;
+    }
 
     /**
      * Returns true when the left team has a non-null entry at {@code slotIndex}.
@@ -156,35 +250,62 @@ public final class ArenaBattleTransitionOverlay {
      * Full render pass. Called every frame from
      * {@link ArenaBattleLeadPreviewScreen#render}.
      */
+    /** Hit-test the opponent (right) side slots. Returns -1 if none. */
+    public int getOpponentSlotAt(double mx, double my, int sw, int sh) {
+        int rightSectionX = (int) (sw * 0.54);
+        int sectionY = (int) (sh * 0.22);
+        int totalW = SLOT_COLS * SLOT_SIZE + (SLOT_COLS - 1) * SLOT_GAP;
+        int slotStartX = rightSectionX + (int) (sw * 0.44) - totalW - 4;
+        int slotStartY = sectionY + 22;
+        int count = Math.min(rightTeam.size(), 6);
+        for (int i = 0; i < count; i++) {
+            int sx = slotStartX + (i % SLOT_COLS) * (SLOT_SIZE + SLOT_GAP);
+            int sy = slotStartY + (i / SLOT_COLS) * (SLOT_SIZE + SLOT_GAP);
+            if (
+                mx >= sx &&
+                mx < sx + SLOT_SIZE &&
+                my >= sy &&
+                my < sy + SLOT_SIZE
+            ) return i;
+        }
+        return -1;
+    }
+
+    /** Returns the opponent's entry at slotIndex (from rightTeam), or null. */
+    public ArenaTransitionPokemonEntryPayload getOpponentEntry(int slotIndex) {
+        if (slotIndex < 0 || slotIndex >= rightTeam.size()) return null;
+        return rightTeam.get(slotIndex);
+    }
+
     public void render(
         DrawContext gfx,
         int sw,
         int sh,
         float partialTick,
-        int selectedOwnSlot,
-        int hoveredOwnSlot
+        java.util.List<Integer> selectedOwnSlots,
+        int hoveredOwnSlot,
+        int hoveredOpponentSlot
     ) {
         if (!active) return;
-
+        this.lastPartialTick = partialTick;
         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
 
-        // 1 ── Fullscreen dark background ──────────────────────────────────────
+        // 1 ── Fullscreen dark background
         gfx.fill(0, 0, sw, sh, color(0, 0, 0, 210));
-        // Subtle warm tint on the top third
         gfx.fill(0, 0, sw, sh / 3, color(44, 15, 20, 70));
 
-        // 2 ── Banner: "BATALHA NA ARENA" ──────────────────────────────────────
+        // 2 ── Banner
         drawBanner(gfx, tr, sw, sh);
-
-        // 3 ── Center decorative divider + "VS" ────────────────────────────────
+        // 3 ── VS divider
         drawVsDivider(gfx, tr, sw, sh);
 
-        // 4 ── Left (own) player section ───────────────────────────────────────
         int sectionW = (int) (sw * 0.44);
         int sectionY = (int) (sh * 0.22);
         int leftSectionX = (int) (sw * 0.02);
+        int rightSectionX = (int) (sw * 0.54);
 
-        drawPlayerSection(
+        // 4 ── Own (left) player section
+        drawPlayerSectionMulti(
             gfx,
             tr,
             leftName,
@@ -192,14 +313,13 @@ public final class ArenaBattleTransitionOverlay {
             leftSectionX,
             sectionY,
             sectionW,
-            selectedOwnSlot,
+            selectedOwnSlots,
             hoveredOwnSlot,
-            /* isOwn = */ true
+            true
         );
 
-        // 5 ── Right (opponent) player section ─────────────────────────────────
-        int rightSectionX = (int) (sw * 0.54);
-        drawPlayerSection(
+        // 5 ── Opponent (right) player section
+        drawPlayerSectionMulti(
             gfx,
             tr,
             rightName,
@@ -207,19 +327,40 @@ public final class ArenaBattleTransitionOverlay {
             rightSectionX,
             sectionY,
             sectionW,
-            -1,
-            -1,
-            /* isOwn = */ false
+            java.util.List.of(),
+            hoveredOpponentSlot,
+            false
         );
 
-        // 6 ── Instruction line ─────────────────────────────────────────────────
+        // 6 ── Selection instruction
         drawInstruction(gfx, tr, sw, sh);
 
-        // 7 ── Countdown label ──────────────────────────────────────────────────
+        // 7 ── Countdown
         drawCountdown(gfx, tr, sw, sh);
 
-        // 8 ── Progress bar ─────────────────────────────────────────────────────
+        // 8 ── Progress bar
         drawProgressBar(gfx, sw, sh);
+
+        // 9 ── Hover tooltip — own or opponent Pokemon
+        // Shown for BOTH sides so each player can check any Pokemon's info.
+        ArenaTransitionPokemonEntryPayload tooltipEntry = null;
+        if (hoveredOpponentSlot >= 0) {
+            tooltipEntry = getOpponentEntry(hoveredOpponentSlot);
+        } else if (hoveredOwnSlot >= 0) {
+            tooltipEntry =
+                hoveredOwnSlot < leftTeam.size()
+                    ? leftTeam.get(hoveredOwnSlot)
+                    : null;
+        }
+        if (tooltipEntry != null) {
+            drawOpponentTooltip(
+                gfx,
+                tr,
+                (int) (sw * 0.5),
+                (int) (sh * 0.72),
+                tooltipEntry
+            );
+        }
     }
 
     // ── Private draw helpers ─────────────────────────────────────────────────────
@@ -322,6 +463,114 @@ public final class ArenaBattleTransitionOverlay {
     }
 
     /**
+     * Draws one player's section — multi-lead version (replaces old single-int).
+     */
+    private void drawPlayerSectionMulti(
+        DrawContext gfx,
+        TextRenderer tr,
+        String playerName,
+        List<ArenaTransitionPokemonEntryPayload> team,
+        int x,
+        int y,
+        int width,
+        java.util.List<Integer> selectedSlots,
+        int hoveredSlot,
+        boolean isOwn
+    ) {
+        drawPlayerSection(
+            gfx,
+            tr,
+            playerName,
+            team,
+            x,
+            y,
+            width,
+            selectedSlots,
+            hoveredSlot,
+            isOwn
+        );
+    }
+
+    /**
+     * Draws a full info tooltip for a Pokémon (own or opponent).
+     * Shows name, level, types, ability, held item, nature and moves.
+     */
+    private void drawOpponentTooltip(
+        DrawContext gfx,
+        TextRenderer tr,
+        int cx,
+        int cy,
+        ArenaTransitionPokemonEntryPayload entry
+    ) {
+        String name = entry.speciesName() != null ? entry.speciesName() : "???";
+        int lv = entry.level();
+        String types = entry.typeNames().isEmpty()
+            ? ""
+            : String.join(" / ", entry.typeNames());
+        String ability = entry.abilityName().isBlank()
+            ? ""
+            : "Hab: " + entry.abilityName();
+        String item = entry.heldItemName().isBlank()
+            ? ""
+            : "Item: " + entry.heldItemName();
+        String nature = entry.natureName().isBlank()
+            ? ""
+            : "Nat: " + entry.natureName();
+
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        lines.add(name + "  Nv." + lv);
+        if (!types.isBlank()) lines.add(types);
+        if (!ability.isBlank()) lines.add(ability);
+        if (!item.isBlank()) lines.add(item);
+        if (!nature.isBlank()) lines.add(nature);
+        if (!entry.moveNames().isEmpty()) {
+            lines.add("Golpes:");
+            entry.moveNames().forEach(m -> lines.add("  " + m));
+        }
+
+        int lineH = 10;
+        int padX = 8;
+        int padY = 6;
+        int boxW = 0;
+        for (String l : lines) boxW = Math.max(boxW, tr.getWidth(l) + padX * 2);
+        boxW = Math.max(boxW, 160);
+        int boxH = padY * 2 + lines.size() * lineH;
+
+        // Position: prefer centred on cx, clamp to screen
+        int bx = cx - boxW / 2;
+        if (bx < 4) bx = 4;
+        int by = cy - boxH - 8;
+        if (by < 4) by = cy + 8;
+
+        // Background
+        gfx.fill(bx, by, bx + boxW, by + boxH, color(10, 6, 18, 240));
+        gfx.fill(bx, by, bx + boxW, by + 1, BORDER_HIGHLIGHT);
+        gfx.fill(bx, by, bx + 1, by + boxH, BORDER_HIGHLIGHT);
+        gfx.fill(bx + boxW - 1, by, bx + boxW, by + boxH, BORDER_COLOR);
+        gfx.fill(bx, by + boxH - 1, bx + boxW, by + boxH, BORDER_COLOR);
+        // Header accent
+        gfx.fill(
+            bx + 1,
+            by + 1,
+            bx + boxW - 1,
+            by + lineH + padY,
+            color(40, 12, 24, 180)
+        );
+
+        // Text rows
+        int ty = by + padY;
+        for (int i = 0; i < lines.size(); i++) {
+            int col = (i == 0)
+                ? RANKED_ACCENT
+                : lines.get(i).startsWith("Golpes")
+                    ? WARNING_ACCENT
+                    : TEXT_PRIMARY;
+            gfx.drawText(tr, lines.get(i), bx + padX, ty, col, false);
+            ty += lineH;
+        }
+    }
+
+    /**
      * Draws one player's name header and up to 6 Pokémon slots.
      *
      * @param isOwn  {@code true} = left side (interactive), {@code false} = right side.
@@ -334,7 +583,7 @@ public final class ArenaBattleTransitionOverlay {
         int x,
         int y,
         int width,
-        int selectedSlot,
+        java.util.List<Integer> selectedSlots,
         int hoveredSlot,
         boolean isOwn
     ) {
@@ -380,7 +629,7 @@ public final class ArenaBattleTransitionOverlay {
             int sx = slotStartX + col * (SLOT_SIZE + SLOT_GAP);
             int sy = slotStartY + row * (SLOT_SIZE + SLOT_GAP);
 
-            boolean selected = isOwn && i == selectedSlot;
+            boolean selected = isOwn && selectedSlots.contains(i);
             boolean hovered = isOwn && i == hoveredSlot;
 
             drawSlot(gfx, tr, sx, sy, i, entry, selected, hovered, isOwn);
@@ -392,10 +641,12 @@ public final class ArenaBattleTransitionOverlay {
                 slotCount > 0 ? (slotCount + SLOT_COLS - 1) / SLOT_COLS : 0;
             int statusY = slotStartY + rows * (SLOT_SIZE + SLOT_GAP) + 2;
             String status =
-                selectedSlot >= 0
+                !selectedSlots.isEmpty()
                     ? "Lead selecionado! Aguardando inicio..."
                     : "Clique em um Pokemon para selecionar o lead";
-            int statusColor = selectedSlot >= 0 ? SUCCESS_ACCENT : TEXT_DIM;
+            int statusColor = !selectedSlots.isEmpty()
+                ? SUCCESS_ACCENT
+                : TEXT_DIM;
             gfx.drawText(tr, status, slotStartX, statusY, statusColor, false);
         }
     }
@@ -415,6 +666,8 @@ public final class ArenaBattleTransitionOverlay {
         boolean isOwn
     ) {
         int fillColor = SLOT_COLORS[index % SLOT_COLORS.length];
+        int dimmedFill = mix(fillColor, color(8, 6, 14, 255), 0.58f);
+        int activeFill = mix(fillColor, color(255, 255, 255, 255), 0.22f);
 
         // Outer dark border
         gfx.fill(sx, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, color(10, 4, 6, 220));
@@ -424,17 +677,17 @@ public final class ArenaBattleTransitionOverlay {
             sy + 1,
             sx + SLOT_SIZE - 1,
             sy + SLOT_SIZE - 1,
-            fillColor
+            selected || hovered ? activeFill : dimmedFill
         );
 
         // ── State border ──────────────────────────────────────────────────────
         if (selected) {
             // Bright green border — 2 px thick on all sides
             drawBorder(gfx, sx, sy, SLOT_SIZE, SLOT_SIZE, 2, SUCCESS_ACCENT);
-            // Checkmark in top-right corner
+            // Selection mark in top-right corner
             gfx.drawText(
                 tr,
-                "v",
+                "✓",
                 sx + SLOT_SIZE - 10,
                 sy + 2,
                 SUCCESS_ACCENT,
@@ -464,29 +717,104 @@ public final class ArenaBattleTransitionOverlay {
             );
         }
 
-        // ── Species abbreviation text ─────────────────────────────────────────
+        // ── Pokemon model (Cobblemon 3D) or fallback text ─────────────────────
         if (entry != null) {
-            String name = entry.speciesName();
-            if (name == null || name.isBlank()) name = "???";
+            String speciesKey = entry.speciesKey();
+            String speciesName = entry.speciesName();
+            if (speciesName == null || speciesName.isBlank()) speciesName =
+                "???";
 
-            // Truncate to 5 chars and draw centred at 80 % scale
-            String abbr = name.length() > 5 ? name.substring(0, 5) : name;
-            float scale = 0.8f;
-            int abbrW = (int) (tr.getWidth(abbr) * scale);
-            int abbrH = (int) (8 * scale);
-            int tx = sx + (SLOT_SIZE - abbrW) / 2;
-            int ty = sy + (SLOT_SIZE - abbrH) / 2;
+            boolean rendered = false;
+            if (speciesKey != null && !speciesKey.isBlank()) {
+                try {
+                    Identifier speciesId = Identifier.of(speciesKey);
+                    Map<Integer, FloatingState> states = isOwn
+                        ? leftStates
+                        : rightStates;
+                    FloatingState state = states.computeIfAbsent(index, k ->
+                        new FloatingState()
+                    );
+                    Quaternionf rot = new Quaternionf().rotationXYZ(
+                        (float) Math.toRadians(10),
+                        (float) Math.toRadians(25),
+                        0f
+                    );
+                    gfx.getMatrices().push();
+                    // Centre the model in the slot:
+                    // ArenaPartyPreviewRenderer uses sy-1 for a 32-px slot.
+                    // Our slot is 52 px; the model occupies ~32 px vertically
+                    // at scale 2.6, so offset by (52-32)/2 = 10 px to centre.
+                    gfx
+                        .getMatrices()
+                        .translate(sx + SLOT_SIZE / 2f, sy + 10f, 0f);
+                    gfx.getMatrices().scale(2.6f, 2.6f, 1f);
+                    PokemonGuiUtilsKt.drawProfilePokemon(
+                        speciesId,
+                        gfx.getMatrices(),
+                        rot,
+                        PoseType.PROFILE,
+                        state,
+                        lastPartialTick,
+                        4.5f,
+                        true,
+                        false,
+                        false,
+                        1f,
+                        1f,
+                        1f,
+                        1f,
+                        0f,
+                        0f
+                    );
+                    gfx.getMatrices().pop();
+                    rendered = true;
+                } catch (Exception ignored) {
+                    // Model not ready yet — fall through to text fallback
+                }
+            }
+            if (!rendered) {
+                // Text fallback: species name centred in the slot
+                String abbr =
+                    speciesName.length() > 5
+                        ? speciesName.substring(0, 5)
+                        : speciesName;
+                float scale = 0.78f;
+                int abbrW = (int) (tr.getWidth(abbr) * scale);
+                gfx.getMatrices().push();
+                gfx
+                    .getMatrices()
+                    .translate(
+                        sx + (SLOT_SIZE - abbrW) / 2,
+                        sy + SLOT_SIZE / 2 - 4,
+                        0.0
+                    );
+                gfx.getMatrices().scale(scale, scale, 1.0f);
+                gfx.drawText(tr, abbr, 0, 0, TEXT_PRIMARY, true);
+                gfx.getMatrices().pop();
+            }
 
+            // Species name label below the model
+            String label =
+                speciesName.length() > 7
+                    ? speciesName.substring(0, 7)
+                    : speciesName;
+            int labelW = (int) (tr.getWidth(label) * 0.60f);
             gfx.getMatrices().push();
-            gfx.getMatrices().translate(tx, ty, 0.0);
-            gfx.getMatrices().scale(scale, scale, 1.0f);
-            gfx.drawText(tr, abbr, 0, 0, TEXT_PRIMARY, true);
+            gfx
+                .getMatrices()
+                .translate(
+                    sx + (SLOT_SIZE - labelW) / 2,
+                    sy + SLOT_SIZE - 9,
+                    0f
+                );
+            gfx.getMatrices().scale(0.60f, 0.60f, 1f);
+            gfx.drawText(tr, label, 0, 0, TEXT_PRIMARY, true);
             gfx.getMatrices().pop();
         } else {
-            // Empty slot — show dash
-            int dashX = sx + SLOT_SIZE / 2 - tr.getWidth("-") / 2;
+            // Empty slot — show circle placeholder
+            int dashX = sx + SLOT_SIZE / 2 - tr.getWidth("○") / 2;
             int dashY = sy + SLOT_SIZE / 2 - 4;
-            gfx.drawText(tr, "-", dashX, dashY, color(80, 60, 60, 180), false);
+            gfx.drawText(tr, "○", dashX, dashY, color(80, 60, 60, 180), false);
         }
     }
 
@@ -522,13 +850,15 @@ public final class ArenaBattleTransitionOverlay {
         );
     }
 
-    private void drawInstruction(
-        DrawContext gfx,
-        TextRenderer tr,
-        int sw,
-        int sh
-    ) {
-        String msg = "Clique em um Pokemon para seleciona-lo como inicial";
+    private void drawInstruction(DrawContext gfx, TextRenderer tr, int sw, int sh) {
+        String msg =
+            "Selecione " +
+            leadsRequired +
+            " Pokemon para iniciar (" +
+            getSelectedOwnCount() +
+            "/" +
+            leadsRequired +
+            ") e clique em Confirmar";
         int msgW = tr.getWidth(msg);
         int msgY = (int) (sh * 0.83);
         gfx.drawText(tr, msg, sw / 2 - msgW / 2, msgY, TEXT_DIM, false);
@@ -637,6 +967,21 @@ public final class ArenaBattleTransitionOverlay {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static int mix(int first, int second, float amount) {
+        float t = Math.max(0.0F, Math.min(1.0F, amount));
+        int a = Math.round(
+            ((first >> 24) & 0xFF) + (((second >> 24) & 0xFF) - ((first >> 24) & 0xFF)) * t
+        );
+        int r = Math.round(
+            ((first >> 16) & 0xFF) + (((second >> 16) & 0xFF) - ((first >> 16) & 0xFF)) * t
+        );
+        int g = Math.round(
+            ((first >> 8) & 0xFF) + (((second >> 8) & 0xFF) - ((first >> 8) & 0xFF)) * t
+        );
+        int b = Math.round((first & 0xFF) + ((second & 0xFF) - (first & 0xFF)) * t);
+        return (a << 24) | (r << 16) | (g << 8) | b;
     }
 
     private static int color(int r, int g, int b, int a) {

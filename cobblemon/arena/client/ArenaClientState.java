@@ -130,6 +130,22 @@ public final class ArenaClientState {
     // optimistic counter immediately, without waiting for the 5-second timeout.
     private static volatile boolean serverRejectedQueue = false;
 
+    // Match-found signal — set when MatchFoundPacket arrives so the queue
+    // counter in ArenaShellScreen is cleared without triggering a rejection.
+    private static volatile boolean matchFoundSignal = false;
+
+    public static void signalMatchFound() {
+        matchFoundSignal = true;
+    }
+
+    public static boolean consumeMatchFound() {
+        if (matchFoundSignal) {
+            matchFoundSignal = false;
+            return true;
+        }
+        return false;
+    }
+
     public static void signalQueueRejection() {
         serverRejectedQueue = true;
     }
@@ -206,6 +222,59 @@ public final class ArenaClientState {
 
     public static List<String> getLeaderboardEntries() {
         return currentRankedSnapshot().leaderboardEntries();
+    }
+
+    /**
+     * Returns leaderboard entries for the ladder whose {@code battleTypeId}
+     * matches {@code format} (e.g. "singles", "doubles", "triples").
+     * Falls back to {@link #getLeaderboardEntries()} if no match is found.
+     */
+    public static List<String> getLeaderboardEntriesForFormat(String format) {
+        if (format == null || format.isBlank()) return getLeaderboardEntries();
+        for (ArenaLadder ladder : getActiveRankedLadders()) {
+            if (ladder.getBattleTypeId().equalsIgnoreCase(format)) {
+                RankedLadderSnapshot snap = getRankedSnapshotById(
+                    ladder.getId()
+                );
+                if (snap != null) return snap.leaderboardEntries();
+            }
+        }
+        // Fallback: try any ladder whose ID contains the format keyword
+        for (java.util.Map.Entry<
+            String,
+            RankedLadderSnapshot
+        > e : rankedLadderSnapshots.entrySet()) {
+            if (
+                e.getKey().contains(format.toLowerCase(java.util.Locale.ROOT))
+            ) {
+                List<String> entries = e.getValue().leaderboardEntries();
+                if (!entries.isEmpty()) return entries;
+            }
+        }
+        // If the chosen tab has no data yet, fall back to any non-empty
+        // leaderboard so the ranking page never looks broken/empty.
+        for (RankedLadderSnapshot snapshot : rankedLadderSnapshots.values()) {
+            if (snapshot != null && !snapshot.leaderboardEntries().isEmpty()) {
+                return snapshot.leaderboardEntries();
+            }
+        }
+        return getLeaderboardEntries();
+    }
+
+    public static void applyLiveRankedSnapshots(
+        List<RankedLadderSnapshot> snapshots
+    ) {
+        if (snapshots == null || snapshots.isEmpty()) return;
+        Map<String, RankedLadderSnapshot> merged = new LinkedHashMap<>(
+            rankedLadderSnapshots
+        );
+        for (RankedLadderSnapshot snapshot : snapshots) {
+            if (snapshot != null) {
+                merged.put(snapshot.ladderId(), snapshot);
+            }
+        }
+        rankedLadderSnapshots = merged;
+        ensureValidSelectedRankedLadder();
     }
 
     public static ArenaLadder getCurrentRankedLadder() {

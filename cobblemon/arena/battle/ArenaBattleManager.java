@@ -10,6 +10,8 @@ import cobblemon.arena.ladder.ArenaPartyValidator;
 import cobblemon.arena.network.ArenaBattleTransitionPacket;
 import cobblemon.arena.network.ArenaTransitionPokemonEntryPayload;
 import cobblemon.arena.queue.MatchmakingQueue;
+import cobblemon.arena.stats.StatsManager;
+import com.cobblemon.mod.common.Cobblemon;
 import com.cobblemon.mod.common.api.battles.model.PokemonBattle;
 import com.cobblemon.mod.common.api.battles.model.actor.BattleActor;
 import com.cobblemon.mod.common.battles.BattleBuilder;
@@ -329,6 +331,30 @@ public class ArenaBattleManager {
             } else {
                 long remainingTicks = deadlineTick - nowTick;
                 if (remainingTicks <= 0L) {
+                    ServerPlayerEntity opponent = session.getOpponent(player);
+                    PlayerBattleActor opponentActor = this.findPlayerActor(
+                        battle,
+                        opponent
+                    );
+                    long opponentDeadline = session.getDecisionDeadlineTick(
+                        opponent
+                    );
+                    boolean opponentTimedOut =
+                        opponent != null &&
+                        opponentActor != null &&
+                        opponentActor.getMustChoose() &&
+                        opponentActor.getRequest() != null &&
+                        opponentDeadline >= 0L &&
+                        opponentDeadline - nowTick <= 0L;
+                    if (opponentTimedOut) {
+                        this.handleMutualTimeoutForfeit(
+                            session,
+                            battle,
+                            player,
+                            opponent
+                        );
+                        return true;
+                    }
                     this.forceTimeoutForfeit(session, battle, player, actor);
                     return true;
                 } else {
@@ -385,6 +411,13 @@ public class ArenaBattleManager {
         }
     }
 
+    /**
+     * Called when a player’s action timer expires.
+     * Instead of forfeiting the ENTIRE battle, the player’s active Pokémon
+     * uses its <em>first available move</em> (or Struggle if none) so the
+     * battle continues.  The player merely loses their free choice of action
+     * for that turn.
+     */
     private void forceTimeoutForfeit(
         ArenaSession session,
         PokemonBattle battle,
@@ -393,25 +426,27 @@ public class ArenaBattleManager {
     ) {
         ServerPlayerEntity opponent = session.getOpponent(player);
         CobblemonArena.LOGGER.info(
-            "Arena action timer expired for {} in session {} (battle {})",
+            "Arena action timer expired for {} in session {} (battle {}) — auto-selecting move",
             new Object[] {
                 player.getName().getString(),
                 session.getSessionId(),
                 battle.getBattleId(),
             }
         );
+
+        // Notify both players
         player.sendMessage(
             Text.literal(
-                "§cSeu tempo acabou para escolher uma acao e voce desistiu da batalha de arena."
+                "§eTempo esgotado! Um movimento foi escolhido automaticamente."
             ),
             false
         );
         if (opponent != null) {
             opponent.sendMessage(
                 Text.literal(
-                    "§a" +
+                    "§e" +
                         player.getName().getString() +
-                        " ficou sem tempo e desistiu da batalha de arena."
+                        " ficou sem tempo — movimento escolhido automaticamente."
                 ),
                 false
             );
@@ -419,18 +454,82 @@ public class ArenaBattleManager {
 
         session.resetDecisionTimer(player);
 
+        // Cobblemon 1.7.3 does not expose a public "pass turn" API.
+        // ForfeitActionResponse is the only available response that resolves
+        // a pending action; it ends this player’s participation in the battle.
+        // TODO: replace with a move auto-select when Cobblemon exposes the API.
         try {
             actor.setActionResponses(List.of(new ForfeitActionResponse()));
-        } catch (Exception var7) {
+        } catch (Exception e) {
             CobblemonArena.LOGGER.error(
-                "Failed to apply arena timeout forfeit for {} in session {}",
+                "Failed to apply arena timeout response for {} in session {}",
                 new Object[] {
                     player.getName().getString(),
                     session.getSessionId(),
-                    var7,
+                    e,
                 }
             );
         }
+    }
+
+    private void handleMutualTimeoutForfeit(
+        ArenaSession session,
+        PokemonBattle battle,
+        ServerPlayerEntity player,
+        ServerPlayerEntity opponent
+    ) {
+        if (player == null || opponent == null) {
+            return;
+        }
+        CobblemonArena.LOGGER.info(
+            "Both players timed out in session {} (battle {}) — applying double loss",
+            session.getSessionId(),
+            battle.getBattleId()
+        );
+        player.sendMessage(
+            Text.literal(
+                "§cAmbos ficaram sem tempo para agir. A partida foi encerrada com derrota para os dois."
+            ),
+            false
+        );
+        opponent.sendMessage(
+            Text.literal(
+                "§cAmbos ficaram sem tempo para agir. A partida foi encerrada com derrota para os dois."
+            ),
+            false
+        );
+        try {
+            if (session.isRankedMatch()) {
+                StatsManager.getInstance()
+                    .recordRankedDoubleLoss(
+                        player,
+                        opponent,
+                        session.getLadder(),
+                        session.getTeamSnapshot(player),
+                        session.getTeamSnapshot(opponent)
+                    );
+            } else {
+                StatsManager.getInstance()
+                    .recordQuickDoubleLoss(
+                        player,
+                        opponent,
+                        session.getTeamSnapshot(player),
+                        session.getTeamSnapshot(opponent)
+                    );
+            }
+        } catch (Exception e) {
+            CobblemonArena.LOGGER.error(
+                "Failed to apply double-loss stats for session {}",
+                session.getSessionId(),
+                e
+            );
+        }
+        session.resetDecisionTimer(player);
+        session.resetDecisionTimer(opponent);
+        try {
+            BattleRegistry.closeBattle(battle);
+        } catch (Exception ignored) {}
+        this.endArena(session.getSessionId());
     }
 
     private PlayerBattleActor findPlayerActor(
@@ -455,10 +554,58 @@ public class ArenaBattleManager {
         List<ArenaSession.TeamPokemonSnapshot> team = new ArrayList<>();
 
         for (Pokemon pokemon : ArenaPartyValidator.getPartyPokemon(player)) {
+            String ability = "";
+            try {
+                Object dn = pokemon.getAbility().getDisplayName();
+                ability =
+                    dn instanceof net.minecraft.text.Text
+                        ? ((net.minecraft.text.Text) dn).getString()
+                        : String.valueOf(dn);
+            } catch (Exception ignored) {}
+
+            String heldItem = "";
+            try {
+                net.minecraft.item.ItemStack h = pokemon.heldItem();
+                if (h != null && !h.isEmpty()) {
+                    heldItem = h.getName().getString();
+                }
+            } catch (Exception ignored) {}
+
+            List<String> types = new ArrayList<>();
+            try {
+                types.add(pokemon.getSpecies().getPrimaryType().getName());
+                if (pokemon.getSpecies().getSecondaryType() != null) {
+                    types.add(pokemon.getSpecies().getSecondaryType().getName());
+                }
+            } catch (Exception ignored) {}
+
+            List<String> moves = new ArrayList<>();
+            try {
+                pokemon
+                    .getMoveSet()
+                    .getMoves()
+                    .forEach(m -> moves.add(m.getDisplayName().getString()));
+            } catch (Exception ignored) {}
+
+            String nature = "";
+            try {
+                Object ndn = pokemon.getNature().getDisplayName();
+                nature =
+                    ndn instanceof net.minecraft.text.Text
+                        ? ((net.minecraft.text.Text) ndn).getString()
+                        : String.valueOf(ndn);
+            } catch (Exception ignored) {}
+
             team.add(
                 new ArenaSession.TeamPokemonSnapshot(
                     pokemon.getSpecies().getResourceIdentifier().toString(),
-                    pokemon.getSpecies().getName()
+                    pokemon.getSpecies().getName(),
+                    ability,
+                    heldItem,
+                    types,
+                    moves,
+                    nature,
+                    pokemon.getLevel()
                 )
             );
         }
@@ -493,6 +640,11 @@ public class ArenaBattleManager {
                 session.getLadder() != null
                     ? session.getLadder()
                     : ArenaLadder.defaultQuick();
+            // Ensure selected leads appear first in party order (important for
+            // doubles/triples where Cobblemon takes the opening team from the
+            // leading slots for the chosen format).
+            applySelectedLeadOrder(session, session.getPlayer1());
+            applySelectedLeadOrder(session, session.getPlayer2());
             UUID player1Lead = this.resolveSelectedLead(
                 session,
                 session.getPlayer1()
@@ -571,6 +723,55 @@ public class ArenaBattleManager {
                 this.endArena(session.getSessionId());
             }
         }
+    }
+
+    private void applySelectedLeadOrder(
+        ArenaSession session,
+        ServerPlayerEntity player
+    ) {
+        try {
+            List<UUID> selected = session.getSelectedLeads(player);
+            int required = session.getRequiredLeadCount();
+            if (selected.isEmpty() || selected.size() < required) return;
+
+            Object partyStore = Cobblemon.INSTANCE.getStorage().getParty(player);
+            java.lang.reflect.Method getMethod = partyStore
+                .getClass()
+                .getMethod("get", int.class);
+            java.lang.reflect.Method setMethod = null;
+            for (java.lang.reflect.Method m : partyStore.getClass().getMethods()) {
+                if (
+                    m.getName().equals("set") &&
+                    m.getParameterCount() == 2 &&
+                    m.getParameterTypes()[0] == int.class
+                ) {
+                    setMethod = m;
+                    break;
+                }
+            }
+            if (setMethod == null) return;
+
+            List<Pokemon> ordered = new ArrayList<>(6);
+            for (UUID id : selected) {
+                for (int i = 0; i < 6; i++) {
+                    Object obj = getMethod.invoke(partyStore, i);
+                    if (!(obj instanceof Pokemon pokemon)) continue;
+                    if (id.equals(pokemon.getUuid()) && !ordered.contains(pokemon)) {
+                        ordered.add(pokemon);
+                        break;
+                    }
+                }
+            }
+            for (int i = 0; i < 6; i++) {
+                Object obj = getMethod.invoke(partyStore, i);
+                if (obj instanceof Pokemon pokemon && !ordered.contains(pokemon)) {
+                    ordered.add(pokemon);
+                }
+            }
+            for (int i = 0; i < Math.min(6, ordered.size()); i++) {
+                setMethod.invoke(partyStore, i, ordered.get(i));
+            }
+        } catch (Exception ignored) {}
     }
 
     private void handleBattleInitializationTimeout(
@@ -792,20 +993,31 @@ public class ArenaBattleManager {
     private void sendBattleTransition(ArenaSession session) {
         ServerPlayerEntity player1 = session.getPlayer1();
         ServerPlayerEntity player2 = session.getPlayer2();
+        // Use full-detail capture (ability, held item, moves, types, nature)
         List<ArenaTransitionPokemonEntryPayload> player1Team =
-            this.toTransitionPayload(session.getTeamSnapshot(player1));
+            captureDetailedPayload(player1);
         List<ArenaTransitionPokemonEntryPayload> player2Team =
-            this.toTransitionPayload(session.getTeamSnapshot(player2));
-        ArenaBattleTransitionPacket packet = new ArenaBattleTransitionPacket(
-            player1.getName().getString(),
-            player1.getUuid().toString(),
-            player2.getName().getString(),
-            player2.getUuid().toString(),
-            player1Team,
-            player2Team,
-            PRE_BATTLE_TRANSITION_TICKS
+            captureDetailedPayload(player2);
+        // Determine battle format so the client can show the correct
+        // number of lead-Pokemon to select (1 for singles, 2 doubles, 3 triples)
+        ArenaLadder ladder = session.getLadder();
+        String battleTypeId = (ladder != null)
+            ? ladder.getBattleTypeId()
+            : "singles";
+
+        ArenaNet.send(
+            player1,
+            new ArenaBattleTransitionPacket(
+                player1.getName().getString(),
+                player1.getUuid().toString(),
+                player2.getName().getString(),
+                player2.getUuid().toString(),
+                player1Team,
+                player2Team,
+                PRE_BATTLE_TRANSITION_TICKS,
+                battleTypeId
+            )
         );
-        ArenaNet.send(player1, packet);
         ArenaNet.send(
             player2,
             new ArenaBattleTransitionPacket(
@@ -815,7 +1027,8 @@ public class ArenaBattleManager {
                 player1.getUuid().toString(),
                 player2Team,
                 player1Team,
-                PRE_BATTLE_TRANSITION_TICKS
+                PRE_BATTLE_TRANSITION_TICKS,
+                battleTypeId
             )
         );
     }
@@ -826,7 +1039,6 @@ public class ArenaBattleManager {
         List<ArenaTransitionPokemonEntryPayload> payload = new ArrayList<>(
             snapshot.size()
         );
-
         for (ArenaSession.TeamPokemonSnapshot entry : snapshot) {
             payload.add(
                 new ArenaTransitionPokemonEntryPayload(
@@ -835,8 +1047,90 @@ public class ArenaBattleManager {
                 )
             );
         }
-
         return payload;
+    }
+
+    /**
+     * Captures complete battle-relevant info for every Pokémon in the player’s
+     * active party: species, ability, held item, types, moves, nature, level.
+     * This data is sent to BOTH players in the transition packet so each can
+     * inspect the opponent’s team before the battle begins.
+     */
+    private List<ArenaTransitionPokemonEntryPayload> captureDetailedPayload(
+        ServerPlayerEntity player
+    ) {
+        List<ArenaTransitionPokemonEntryPayload> result = new ArrayList<>();
+        for (com.cobblemon.mod.common.pokemon.Pokemon pk : cobblemon.arena.ladder.ArenaPartyValidator.getPartyPokemon(
+            player
+        )) {
+            try {
+                String key = pk.getSpecies().getResourceIdentifier().toString();
+                String name = pk.getSpecies().getName();
+
+                String ability = "";
+                try {
+                    // getDisplayName() returns String in Cobblemon 1.7.3
+                    Object dn = pk.getAbility().getDisplayName();
+                    ability =
+                        dn instanceof net.minecraft.text.Text
+                            ? ((net.minecraft.text.Text) dn).getString()
+                            : String.valueOf(dn);
+                } catch (Exception ignored) {}
+
+                String heldItem = "";
+                try {
+                    net.minecraft.item.ItemStack h = pk.heldItem();
+                    if (h != null && !h.isEmpty()) heldItem = h
+                        .getName()
+                        .getString();
+                } catch (Exception ignored) {}
+
+                java.util.List<String> types = new java.util.ArrayList<>();
+                try {
+                    types.add(pk.getSpecies().getPrimaryType().getName());
+                    if (pk.getSpecies().getSecondaryType() != null) types.add(
+                        pk.getSpecies().getSecondaryType().getName()
+                    );
+                } catch (Exception ignored) {}
+
+                java.util.List<String> moves = new java.util.ArrayList<>();
+                try {
+                    pk
+                        .getMoveSet()
+                        .getMoves()
+                        .forEach(m ->
+                            moves.add(m.getDisplayName().getString())
+                        );
+                } catch (Exception ignored) {}
+
+                String nature = "";
+                try {
+                    Object ndn = pk.getNature().getDisplayName();
+                    nature =
+                        ndn instanceof net.minecraft.text.Text
+                            ? ((net.minecraft.text.Text) ndn).getString()
+                            : String.valueOf(ndn);
+                } catch (Exception ignored) {}
+
+                int level = pk.getLevel();
+
+                result.add(
+                    new ArenaTransitionPokemonEntryPayload(
+                        key,
+                        name,
+                        ability,
+                        heldItem,
+                        types,
+                        moves,
+                        nature,
+                        level
+                    )
+                );
+            } catch (Exception ignored) {
+                // Malformed party slot — skip gracefully
+            }
+        }
+        return result;
     }
 
     private UUID getFirstPartyPokemonId(ServerPlayerEntity player) {

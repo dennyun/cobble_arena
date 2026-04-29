@@ -9,6 +9,7 @@ import cobblemon.arena.network.DeleteCustomLadderTemplatePacket;
 import cobblemon.arena.network.JoinQueuePacket;
 import cobblemon.arena.network.LoadCustomLadderTemplatePacket;
 import cobblemon.arena.network.MatchFoundPacket;
+import cobblemon.arena.network.ArenaRankedSyncPacket;
 import cobblemon.arena.network.OpenArenaGuiPacket;
 import cobblemon.arena.network.PostMatchResultsPacket;
 import cobblemon.arena.network.QueueStatusPacket;
@@ -38,31 +39,24 @@ public final class CobblemonArenaClient {
             MinecraftClient.getInstance().setScreen(new ArenaShellScreen())
         );
 
-        // Capture player chat messages for the Arena chat panel.
-        // We use the CHAT event (not GAME) so only real player-sent messages
-        // are captured — system messages (join/leave, commands, etc.) are excluded.
-        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT.register(
-            (message, signedMessage, sender, params, receptionTimestamp) -> {
-                String raw = message.getString();
-                // Strip /g or [G] prefixes that some chat plugins add
-                String clean = raw
-                    .replaceFirst("^\\[G\\]\\s*", "")
-                    .replaceFirst("^/g\\s+", "")
-                    .trim();
-                if (!clean.isBlank()) {
-                    cobblemon.arena.client.ArenaChatState.addMessage(clean);
-                }
-            }
-        );
-        // Also capture GAME messages that look like player chat
-        // (some servers route /g through game messages).
+        // Arena Chat Panel — capture ONLY global (/g) messages.
+        //
+        // Strategy:
+        //  • GAME event: messages formatted as "[G] Name: text" or
+        //    starting with "[G]" (standard plugin output for /g command).
+        //  • CHAT event: all signed chat is captured but ONLY kept when
+        //    it looks like a /g broadcast (contains "[G]" marker or the
+        //    raw command echo "/g "). Regular Minecraft chat is skipped.
+        //
+        // Both routes strip the [G] prefix so the panel shows clean text.
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register(
             (message, overlay) -> {
-                if (overlay) return; // skip action-bar
+                if (overlay) return; // skip action-bar / title messages
                 String raw = message.getString();
-                // Only include messages that look like "Name: text" (player chat)
-                // or that contain the /g prefix added by the global chat command.
-                if (raw.contains(": ") || raw.startsWith("[G]")) {
+                // Accept only messages that carry the /g command marker.
+                boolean isGlobal =
+                    raw.startsWith("[G]") || raw.startsWith("/g ");
+                if (isGlobal) {
                     String clean = raw
                         .replaceFirst("^\\[G\\]\\s*", "")
                         .replaceFirst("^/g\\s+", "")
@@ -71,6 +65,36 @@ public final class CobblemonArenaClient {
                         cobblemon.arena.client.ArenaChatState.addMessage(clean);
                     }
                 }
+            }
+        );
+        // Some servers deliver /g messages as signed CHAT packets.
+        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT.register(
+            (message, signedMessage, sender, params, receptionTimestamp) -> {
+                String raw = message.getString();
+                boolean isGlobal =
+                    raw.startsWith("[G]") || raw.startsWith("/g ");
+                if (isGlobal) {
+                    String clean = raw
+                        .replaceFirst("^\\[G\\]\\s*", "")
+                        .replaceFirst("^/g\\s+", "")
+                        .trim();
+                    if (!clean.isBlank()) {
+                        cobblemon.arena.client.ArenaChatState.addMessage(clean);
+                    }
+                }
+            }
+        );
+        net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register(
+            (drawContext, tickCounter) -> {
+                MinecraftClient mc = MinecraftClient.getInstance();
+                if (mc.currentScreen instanceof ArenaShellScreen) {
+                    return;
+                }
+                cobblemon.arena.client.QueueStatusOverlay.getInstance().render(
+                    drawContext,
+                    mc.getWindow().getScaledWidth(),
+                    mc.getWindow().getScaledHeight()
+                );
             }
         );
 
@@ -100,6 +124,10 @@ public final class CobblemonArenaClient {
         registerS2CPayloadType(
             cobblemon.arena.network.ArenaServerStatusPacket.TYPE,
             cobblemon.arena.network.ArenaServerStatusPacket.CODEC
+        );
+        registerS2CPayloadType(
+            ArenaRankedSyncPacket.TYPE,
+            ArenaRankedSyncPacket.CODEC
         );
 
         registerC2SPayloadType(JoinQueuePacket.TYPE, JoinQueuePacket.CODEC);
@@ -244,6 +272,13 @@ public final class CobblemonArenaClient {
                     .execute(() ->
                         ClientPacketHandler.handleServerStatus(packet)
                     )
+        );
+        ClientPlayNetworking.registerGlobalReceiver(
+            ArenaRankedSyncPacket.TYPE,
+            (packet, context) ->
+                context
+                    .client()
+                    .execute(() -> ClientPacketHandler.handleRankedSync(packet))
         );
     }
 }

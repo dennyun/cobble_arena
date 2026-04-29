@@ -62,11 +62,21 @@ public class ClientPacketHandler {
     public static void handleMatchFound(MatchFoundPacket packet) {
         QueueStatusOverlay overlay = QueueStatusOverlay.getInstance();
         overlay.setMatchFound(packet.opponentName(), packet.countdownSeconds());
+        // Tell ArenaShellScreen to close the queue counter card immediately.
+        // The QueueStatusOverlay continues showing "Partida encontrada!" via
+        // its own top-right HUD; only the in-screen counter is cleared.
+        ArenaClientState.signalMatchFound();
     }
 
     public static void handleArenaBattleTransition(
         ArenaBattleTransitionPacket packet
     ) {
+        // The battle is definitively starting — clear the queue overlay so that
+        // if the player reopens /arena after the battle, they don't see the
+        // queue counter and aren't auto-placed back in queue.
+        QueueStatusOverlay.getInstance().setVisible(false);
+        ArenaClientState.clearQueueRejection();
+
         ArenaBattleClientState.markTransitionStarted(packet.durationTicks());
         ArenaBattleTransitionOverlay.getInstance().start(
             packet.leftPlayerName(),
@@ -75,7 +85,8 @@ public class ClientPacketHandler {
             packet.rightPlayerUuid(),
             packet.leftTeam(),
             packet.rightTeam(),
-            packet.durationTicks()
+            packet.durationTicks(),
+            packet.battleTypeId()
         );
         MinecraftClient.getInstance().setScreen(
             new ArenaBattleLeadPreviewScreen()
@@ -109,5 +120,9 @@ public class ClientPacketHandler {
         ArenaClientState.setActiveBattles(packet.activeBattles());
         ArenaClientState.setAvailableArenas(packet.availableArenas());
         ArenaClientState.setTotalArenas(packet.totalArenas());
+    }
+
+    public static void handleRankedSync(ArenaRankedSyncPacket packet) {
+        ArenaClientState.applyLiveRankedSnapshots(packet.rankedLadderSnapshots());
     }
 }

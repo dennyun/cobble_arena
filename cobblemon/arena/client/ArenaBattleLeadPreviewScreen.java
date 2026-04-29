@@ -10,22 +10,16 @@ import net.minecraft.text.Text;
 /**
  * Fullscreen lead-selection screen shown during the arena battle transition.
  *
- * Rendering responsibilities:
- *  - renderBackground() is a deliberate no-op so Minecraft's built-in dark
- *    vignette / background blur does NOT draw on top of our overlay.
- *  - render() drives the entire frame: it paints the transition overlay first
- *    (background layer), then calls super.render() so that any registered
- *    child widgets (none currently, but kept for future safety) are composited
- *    on top, and finally draws any per-frame HUD elements that must sit above
- *    everything else.
+ * Supports selecting 1 lead (Singles), 2 leads (Doubles) or 3 leads (Triples).
+ * Sends {@link SelectArenaLeadPacket} with all selected slots. When all
+ * required leads are chosen on both sides the server starts immediately,
+ * without waiting for the full countdown.
  */
 public class ArenaBattleLeadPreviewScreen extends Screen {
 
     private final ArenaBattleTransitionOverlay overlay =
         ArenaBattleTransitionOverlay.getInstance();
-
-    /** Party-slot index the player has confirmed as their lead, or -1 if none. */
-    private int selectedOwnSlot = -1;
+    private boolean leadSelectionConfirmed = false;
 
     public ArenaBattleLeadPreviewScreen() {
         super(Text.translatable("gui.cobblemon_arena.title.lead_preview"));
@@ -35,7 +29,10 @@ public class ArenaBattleLeadPreviewScreen extends Screen {
 
     @Override
     public void tick() {
-        // Close as soon as the overlay expires or the actual battle has begun.
+        // Advance timers that have no registered ClientTickEvents listener.
+        this.overlay.tick();
+        ArenaBattleClientState.tick();
+
         if (!this.overlay.isActive()) {
             this.close();
             return;
@@ -54,88 +51,71 @@ public class ArenaBattleLeadPreviewScreen extends Screen {
 
     // ── Rendering ────────────────────────────────────────────────────────────────
 
-    /**
-     * Intentionally empty — suppresses Minecraft's built-in in-game dark
-     * overlay / background blur.  Our overlay draws its own full-screen
-     * background in {@link #render}, so the vanilla backdrop must not appear.
-     */
     @Override
-    public void renderBackground(
-        DrawContext graphics,
-        int mouseX,
-        int mouseY,
-        float delta
-    ) {
-        // no-op: suppress default Minecraft background
+    public void renderBackground(DrawContext gfx, int mx, int my, float delta) {
+        // no-op: suppress default Minecraft dark overlay
     }
 
-    /**
-     * Main render entry point.
-     *
-     * Draw order:
-     *  1. Transition overlay (fullscreen background + team panels + countdown).
-     *  2. super.render() → renderBackground() (no-op) + any child widgets.
-     */
     @Override
-    public void render(
-        DrawContext graphics,
-        int mouseX,
-        int mouseY,
-        float delta
-    ) {
-        // Determine which own slot is under the cursor this frame so the overlay
-        // can paint the hover highlight without an extra query call.
+    public void render(DrawContext gfx, int mx, int my, float delta) {
         int hoveredSlot = this.overlay.getOwnPartySlotAt(
-            mouseX,
-            mouseY,
+            mx,
+            my,
+            this.width,
+            this.height
+        );
+        int hoveredOpponentSlot = this.overlay.getOpponentSlotAt(
+            mx,
+            my,
             this.width,
             this.height
         );
 
-        // 1. Draw the fullscreen transition overlay (background layer).
         this.overlay.render(
-            graphics,
+            gfx,
             this.width,
             this.height,
             delta,
-            this.selectedOwnSlot,
-            hoveredSlot
+            this.overlay.getSelectedOwnSlots(),
+            hoveredSlot,
+            hoveredOpponentSlot
         );
+        this.drawConfirmButton(gfx);
 
-        // 2. Let Screen render registered widgets (none today, but keeps the
-        //    widget pipeline intact for future additions).  renderBackground()
-        //    is called internally by super.render() but is a no-op above, so
-        //    it will not overwrite what we just drew.
-        super.render(graphics, mouseX, mouseY, delta);
+        super.render(gfx, mx, my, delta);
     }
 
     // ── Input ────────────────────────────────────────────────────────────────────
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // Only respond to left-click.
+    public boolean mouseClicked(double mx, double my, int button) {
         if (button != 0) return true;
 
         int slotIndex = this.overlay.getOwnPartySlotAt(
-            mouseX,
-            mouseY,
+            mx,
+            my,
             this.width,
             this.height
         );
-
         if (slotIndex >= 0 && this.overlay.hasOwnPokemonAt(slotIndex)) {
-            this.selectedOwnSlot = slotIndex;
-            // Inform the server of the player's lead selection.
-            ClientPlayNetworking.send(new SelectArenaLeadPacket(slotIndex));
+            boolean changed = this.overlay.toggleOwnSlot(slotIndex);
+            if (changed) {
+                this.leadSelectionConfirmed = false;
+            }
+            return true;
         }
 
+        if (isOverConfirmButton(mx, my) && this.overlay.hasAllLeadsSelected()) {
+            java.util.List<Integer> selected = this.overlay.getSelectedOwnSlots();
+            ClientPlayNetworking.send(new SelectArenaLeadPacket(selected));
+            this.leadSelectionConfirmed = true;
+        }
         return true;
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        // Block Escape (keyCode 256) — the player must wait for the timer.
-        if (keyCode == 256) return true;
+        if (keyCode == 256) return true; // Block Escape during transition
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
@@ -144,19 +124,56 @@ public class ArenaBattleLeadPreviewScreen extends Screen {
         return false;
     }
 
+    @Override
+    public boolean shouldPause() {
+        return false;
+    }
+
     // ── Teardown ─────────────────────────────────────────────────────────────────
 
     @Override
     public void close() {
         this.overlay.clear();
+        this.leadSelectionConfirmed = false;
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.currentScreen == this) {
-            client.setScreen(null);
-        }
+        if (client.currentScreen == this) client.setScreen(null);
     }
 
-    @Override
-    public boolean shouldPause() {
-        return false;
+    private boolean isOverConfirmButton(double mx, double my) {
+        int bw = 130;
+        int bh = 20;
+        int bx = this.width / 2 - bw / 2;
+        int by = (int) (this.height * 0.865);
+        return mx >= bx && mx < bx + bw && my >= by && my < by + bh;
+    }
+
+    private void drawConfirmButton(DrawContext gfx) {
+        int bw = 130;
+        int bh = 20;
+        int bx = this.width / 2 - bw / 2;
+        int by = (int) (this.height * 0.865);
+        boolean enabled = this.overlay.hasAllLeadsSelected();
+        int bg = enabled ? 0xCC3AA76B : 0x882E2E2E;
+        int border = enabled ? 0xFF6AE79B : 0xFF666666;
+        int text = enabled ? 0xFFF8F2EC : 0xFFB3B3B3;
+        if (leadSelectionConfirmed && enabled) {
+            bg = 0xCC3656A7;
+            border = 0xFF79A3FF;
+        }
+        gfx.fill(bx, by, bx + bw, by + bh, bg);
+        gfx.fill(bx, by, bx + bw, by + 1, border);
+        gfx.fill(bx, by + bh - 1, bx + bw, by + bh, border);
+        gfx.fill(bx, by, bx + 1, by + bh, border);
+        gfx.fill(bx + bw - 1, by, bx + bw, by + bh, border);
+        String label = leadSelectionConfirmed ? "Confirmado" : "Confirmar Leads";
+        int tw = this.textRenderer.getWidth(label);
+        gfx.drawText(
+            this.textRenderer,
+            label,
+            bx + (bw - tw) / 2,
+            by + 6,
+            text,
+            false
+        );
     }
 }

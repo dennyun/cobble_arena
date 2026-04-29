@@ -35,21 +35,11 @@ public final class ArenaAccessService {
         int totalBattles = stats != null ? stats.getTotalBattles() : 0;
         String currentRankedLadderId = config.getRankedLadder().getId();
         List<ArenaMatchHistoryEntryPayload> recentMatchHistory =
-            statsManager.getRecentMatchHistory(player.getUuid(), 30);
+            statsManager.getRecentMatchHistory(player.getUuid(), 10);
         List<ArenaPokemonUsageEntryPayload> pokemonUsage =
             statsManager.getTopPokemonUsage(player.getUuid(), 20);
         List<RankedLadderSnapshot> rankedLadderSnapshots =
-            ArenaLadder.getActiveRankedLadders()
-                .stream()
-                .map(ladder ->
-                    buildRankedLadderSnapshot(
-                        statsManager,
-                        stats,
-                        player,
-                        ladder
-                    )
-                )
-                .toList();
+            buildRankedSnapshotsForPlayer(player);
         ServerPlayNetworking.send(
             player,
             new OpenArenaGuiPacket(
@@ -135,6 +125,19 @@ public final class ArenaAccessService {
         );
     }
 
+    public static List<RankedLadderSnapshot> buildRankedSnapshotsForPlayer(
+        ServerPlayerEntity player
+    ) {
+        StatsManager statsManager = StatsManager.getInstance();
+        PlayerStats stats = statsManager.getStats(player.getUuid());
+        return ArenaLadder.getActiveRankedLadders()
+            .stream()
+            .map(ladder ->
+                buildRankedLadderSnapshot(statsManager, stats, player, ladder)
+            )
+            .toList();
+    }
+
     private static String formatLeaderboardEntry(
         PlayerStats stats,
         String ladderId
@@ -146,7 +149,9 @@ public final class ArenaAccessService {
             " Elo  |  " +
             stats.getRankedWins(ladderId) +
             "-" +
-            stats.getRankedLosses(ladderId)
+            stats.getRankedLosses(ladderId) +
+            "  |  " +
+            stats.getPlayerUUID()
         );
     }
 }

@@ -1,6 +1,7 @@
 package cobblemon.arena;
 
 import cobblemon.arena.arena.ArenaManager;
+import cobblemon.arena.access.ArenaAccessService;
 import cobblemon.arena.arena.SpawnPreventionHandler;
 import cobblemon.arena.battle.ArenaBattleManager;
 import cobblemon.arena.battle.ArenaSpectatorManager;
@@ -12,6 +13,7 @@ import cobblemon.arena.config.ArenaRankedConfigSync;
 import cobblemon.arena.config.ArenaServerConfig;
 import cobblemon.arena.config.BannedPokemonConfig;
 import cobblemon.arena.network.ArenaServerStatusPacket;
+import cobblemon.arena.network.ArenaRankedSyncPacket;
 import cobblemon.arena.network.ServerPacketHandler;
 import cobblemon.arena.quest.QuestManager;
 import cobblemon.arena.queue.MatchmakingQueue;
@@ -108,6 +110,14 @@ public final class CobblemonArena {
             .getPlayerList()) {
             try {
                 ServerPlayNetworking.send(pl, packet);
+                ServerPlayNetworking.send(
+                    pl,
+                    new ArenaRankedSyncPacket(
+                        StatsManager.getInstance().getCurrentSeasonName(),
+                        StatsManager.getInstance().getCurrentSeasonStartedAtMs(),
+                        ArenaAccessService.buildRankedSnapshotsForPlayer(pl)
+                    )
+                );
             } catch (Exception ignored) {
                 // Player may not have fully negotiated the channel yet.
             }

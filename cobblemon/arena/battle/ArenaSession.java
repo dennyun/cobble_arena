@@ -48,8 +48,8 @@ public class ArenaSession {
    private boolean battleLaunchInProgress = false;
    private List<ArenaSession.TeamPokemonSnapshot> player1TeamSnapshot = List.of();
    private List<ArenaSession.TeamPokemonSnapshot> player2TeamSnapshot = List.of();
-   private UUID player1SelectedLeadId;
-   private UUID player2SelectedLeadId;
+   private final List<UUID> player1SelectedLeadIds = new ArrayList<>();
+   private final List<UUID> player2SelectedLeadIds = new ArrayList<>();
    private final Map<UUID, ArenaSession.DecisionTimerState> decisionTimers = new HashMap<>();
 
    public ArenaSession(ServerPlayerEntity player1, ServerPlayerEntity player2, ArenaInstance arena) {
@@ -162,7 +162,7 @@ public class ArenaSession {
    }
 
    public boolean shouldStartBattle(long currentTick) {
-      return this.hasPendingBattleStart() && (this.hasBothLeadSelections() || currentTick >= this.pendingBattleStartTick);
+      return this.hasPendingBattleStart() && (this.hasBothPlayersReadyLeads() || currentTick >= this.pendingBattleStartTick);
    }
 
    public void clearPendingBattleStart() {
@@ -170,37 +170,63 @@ public class ArenaSession {
    }
 
    public boolean hasLeadSelection(ServerPlayerEntity player) {
-      if (player == null) {
-         return false;
-      } else if (player.getUuid().equals(this.player1.getUuid())) {
-         return this.player1SelectedLeadId != null;
-      } else {
-         return player.getUuid().equals(this.player2.getUuid()) ? this.player2SelectedLeadId != null : false;
-      }
+      return this.hasMinimumLeadSelection(player);
    }
 
    public boolean hasBothLeadSelections() {
-      return this.player1SelectedLeadId != null && this.player2SelectedLeadId != null;
+      return this.hasBothPlayersReadyLeads();
    }
 
    public void setSelectedLead(ServerPlayerEntity player, UUID pokemonId) {
-      if (player != null) {
-         if (player.getUuid().equals(this.player1.getUuid())) {
-            this.player1SelectedLeadId = pokemonId;
-         } else if (player.getUuid().equals(this.player2.getUuid())) {
-            this.player2SelectedLeadId = pokemonId;
-         }
-      }
+      if (pokemonId == null) return;
+      this.setSelectedLeads(player, List.of(pokemonId));
    }
 
    public UUID getSelectedLead(ServerPlayerEntity player) {
-      if (player == null) {
-         return null;
-      } else if (player.getUuid().equals(this.player1.getUuid())) {
-         return this.player1SelectedLeadId;
-      } else {
-         return player.getUuid().equals(this.player2.getUuid()) ? this.player2SelectedLeadId : null;
+      List<UUID> ids = this.getSelectedLeads(player);
+      return ids.isEmpty() ? null : ids.get(0);
+   }
+
+   public void setSelectedLeads(ServerPlayerEntity player, List<UUID> pokemonIds) {
+      List<UUID> target = this.selectedLeadList(player);
+      if (target == null) return;
+      target.clear();
+      if (pokemonIds == null || pokemonIds.isEmpty()) return;
+
+      int required = this.getRequiredLeadCount();
+      for (UUID id : pokemonIds) {
+         if (id == null || target.contains(id)) continue;
+         target.add(id);
+         if (target.size() >= required) break;
       }
+   }
+
+   public List<UUID> getSelectedLeads(ServerPlayerEntity player) {
+      List<UUID> src = this.selectedLeadList(player);
+      return src == null ? List.of() : List.copyOf(src);
+   }
+
+   public int getRequiredLeadCount() {
+      String battleTypeId = this.ladder != null ? this.ladder.getBattleTypeId() : "singles";
+      if ("triples".equalsIgnoreCase(battleTypeId)) return 3;
+      if ("doubles".equalsIgnoreCase(battleTypeId)) return 2;
+      return 1;
+   }
+
+   public boolean hasMinimumLeadSelection(ServerPlayerEntity player) {
+      List<UUID> selected = this.selectedLeadList(player);
+      return selected != null && selected.size() >= this.getRequiredLeadCount();
+   }
+
+   public boolean hasBothPlayersReadyLeads() {
+      return this.hasMinimumLeadSelection(this.player1) && this.hasMinimumLeadSelection(this.player2);
+   }
+
+   private List<UUID> selectedLeadList(ServerPlayerEntity player) {
+      if (player == null) return null;
+      if (player.getUuid().equals(this.player1.getUuid())) return this.player1SelectedLeadIds;
+      if (player.getUuid().equals(this.player2.getUuid())) return this.player2SelectedLeadIds;
+      return null;
    }
 
    public void setTeamSnapshots(List<ArenaSession.TeamPokemonSnapshot> player1TeamSnapshot, List<ArenaSession.TeamPokemonSnapshot> player2TeamSnapshot) {
@@ -484,10 +510,35 @@ public class ArenaSession {
    public static final class TeamPokemonSnapshot {
       private final String speciesKey;
       private final String speciesName;
+      private final String abilityName;
+      private final String heldItemName;
+      private final List<String> typeNames;
+      private final List<String> moveNames;
+      private final String natureName;
+      private final int level;
 
       public TeamPokemonSnapshot(String speciesKey, String speciesName) {
+         this(speciesKey, speciesName, "", "", List.of(), List.of(), "", 0);
+      }
+
+      public TeamPokemonSnapshot(
+         String speciesKey,
+         String speciesName,
+         String abilityName,
+         String heldItemName,
+         List<String> typeNames,
+         List<String> moveNames,
+         String natureName,
+         int level
+      ) {
          this.speciesKey = speciesKey == null ? "" : speciesKey;
          this.speciesName = speciesName == null ? "" : speciesName;
+         this.abilityName = abilityName == null ? "" : abilityName;
+         this.heldItemName = heldItemName == null ? "" : heldItemName;
+         this.typeNames = typeNames == null ? List.of() : List.copyOf(typeNames);
+         this.moveNames = moveNames == null ? List.of() : List.copyOf(moveNames);
+         this.natureName = natureName == null ? "" : natureName;
+         this.level = level;
       }
 
       public String getSpeciesKey() {
@@ -496,6 +547,30 @@ public class ArenaSession {
 
       public String getSpeciesName() {
          return this.speciesName;
+      }
+
+      public String getAbilityName() {
+         return this.abilityName;
+      }
+
+      public String getHeldItemName() {
+         return this.heldItemName;
+      }
+
+      public List<String> getTypeNames() {
+         return this.typeNames;
+      }
+
+      public List<String> getMoveNames() {
+         return this.moveNames;
+      }
+
+      public String getNatureName() {
+         return this.natureName;
+      }
+
+      public int getLevel() {
+         return this.level;
       }
    }
 }

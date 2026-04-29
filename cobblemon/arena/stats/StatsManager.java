@@ -217,7 +217,9 @@ public class StatsManager {
             loser.getName().getString(),
             winnerRatingChange,
             winnerStats.getRankedRating(ladderId),
-            this.toUsageInputs(winnerTeam)
+            this.toUsageInputs(winnerTeam),
+            this.toHistoryTeam(winnerTeam),
+            this.toHistoryTeam(loserTeam)
         );
         loserStats.recordProfileMatch(
             true,
@@ -226,7 +228,9 @@ public class StatsManager {
             winner.getName().getString(),
             loserRatingChange,
             loserStats.getRankedRating(ladderId),
-            this.toUsageInputs(loserTeam)
+            this.toUsageInputs(loserTeam),
+            this.toHistoryTeam(loserTeam),
+            this.toHistoryTeam(winnerTeam)
         );
         ArenaRewardService.evaluateMilestoneRewards(winner, winnerStats);
         ArenaRewardService.evaluateMilestoneRewards(loser, loserStats);
@@ -298,7 +302,9 @@ public class StatsManager {
             loser.getName().getString(),
             0,
             0,
-            this.toUsageInputs(winnerTeam)
+            this.toUsageInputs(winnerTeam),
+            this.toHistoryTeam(winnerTeam),
+            this.toHistoryTeam(loserTeam)
         );
         loserStats.recordProfileMatch(
             false,
@@ -307,10 +313,94 @@ public class StatsManager {
             winner.getName().getString(),
             0,
             0,
-            this.toUsageInputs(loserTeam)
+            this.toUsageInputs(loserTeam),
+            this.toHistoryTeam(loserTeam),
+            this.toHistoryTeam(winnerTeam)
         );
         ArenaRewardService.evaluateMilestoneRewards(winner, winnerStats);
         ArenaRewardService.evaluateMilestoneRewards(loser, loserStats);
+        this.saveStatsAsync();
+    }
+
+    public void recordRankedDoubleLoss(
+        ServerPlayerEntity player1,
+        ServerPlayerEntity player2,
+        ArenaLadder ladder,
+        List<ArenaSession.TeamPokemonSnapshot> player1Team,
+        List<ArenaSession.TeamPokemonSnapshot> player2Team
+    ) {
+        PlayerStats stats1 = this.getOrCreateStats(player1);
+        PlayerStats stats2 = this.getOrCreateStats(player2);
+        String ladderId = this.normalizeLadderId(
+            ladder != null ? ladder.getId() : null
+        );
+        String ladderName =
+            ladder != null
+                ? ladder.getDisplayName()
+                : ArenaLadder.defaultRanked().getDisplayName();
+        int p1Before = stats1.getRankedRating(ladderId);
+        int p2Before = stats2.getRankedRating(ladderId);
+        int p1Delta = EloCalculator.calculateRatingChange(p1Before, p2Before, false);
+        int p2Delta = EloCalculator.calculateRatingChange(p2Before, p1Before, false);
+        stats1.recordRankedMatch(ladderId, false, p1Delta);
+        stats2.recordRankedMatch(ladderId, false, p2Delta);
+        stats1.recordProfileMatch(
+            true,
+            false,
+            ladderName,
+            player2.getName().getString(),
+            p1Delta,
+            stats1.getRankedRating(ladderId),
+            this.toUsageInputs(player1Team),
+            this.toHistoryTeam(player1Team),
+            this.toHistoryTeam(player2Team)
+        );
+        stats2.recordProfileMatch(
+            true,
+            false,
+            ladderName,
+            player1.getName().getString(),
+            p2Delta,
+            stats2.getRankedRating(ladderId),
+            this.toUsageInputs(player2Team),
+            this.toHistoryTeam(player2Team),
+            this.toHistoryTeam(player1Team)
+        );
+        this.saveStatsAsync();
+    }
+
+    public void recordQuickDoubleLoss(
+        ServerPlayerEntity player1,
+        ServerPlayerEntity player2,
+        List<ArenaSession.TeamPokemonSnapshot> player1Team,
+        List<ArenaSession.TeamPokemonSnapshot> player2Team
+    ) {
+        PlayerStats stats1 = this.getOrCreateStats(player1);
+        PlayerStats stats2 = this.getOrCreateStats(player2);
+        stats1.recordQuickMatch(false);
+        stats2.recordQuickMatch(false);
+        stats1.recordProfileMatch(
+            false,
+            false,
+            "Partida Rapida",
+            player2.getName().getString(),
+            0,
+            0,
+            this.toUsageInputs(player1Team),
+            this.toHistoryTeam(player1Team),
+            this.toHistoryTeam(player2Team)
+        );
+        stats2.recordProfileMatch(
+            false,
+            false,
+            "Partida Rapida",
+            player1.getName().getString(),
+            0,
+            0,
+            this.toUsageInputs(player2Team),
+            this.toHistoryTeam(player2Team),
+            this.toHistoryTeam(player1Team)
+        );
         this.saveStatsAsync();
     }
 
@@ -461,7 +551,9 @@ public class StatsManager {
                           entry.getOpponentName(),
                           entry.getRatingDelta(),
                           entry.getRatingAfter(),
-                          entry.getPlayedAtMs()
+                          entry.getPlayedAtMs(),
+                          entry.getOwnTeam(),
+                          entry.getOpponentTeam()
                       )
                   )
                   .toList();
@@ -502,6 +594,7 @@ public class StatsManager {
                   .limit(Math.max(0, limit))
                   .map(entry ->
                       new ArenaPokemonUsageEntryPayload(
+                          entry.getSpeciesKey(),
                           entry.getSpeciesName(),
                           entry.getUses(),
                           entry.getWins(),
@@ -637,5 +730,32 @@ public class StatsManager {
         } else {
             return List.of();
         }
+    }
+
+    private List<cobblemon.arena.network.ArenaTransitionPokemonEntryPayload> toHistoryTeam(
+        List<ArenaSession.TeamPokemonSnapshot> team
+    ) {
+        if (team == null || team.isEmpty()) {
+            return List.of();
+        }
+        List<cobblemon.arena.network.ArenaTransitionPokemonEntryPayload> converted =
+            new ArrayList<>(team.size());
+
+        for (ArenaSession.TeamPokemonSnapshot entry : team) {
+            if (entry == null) continue;
+            converted.add(
+                new cobblemon.arena.network.ArenaTransitionPokemonEntryPayload(
+                    entry.getSpeciesKey(),
+                    entry.getSpeciesName(),
+                    entry.getAbilityName(),
+                    entry.getHeldItemName(),
+                    entry.getTypeNames(),
+                    entry.getMoveNames(),
+                    entry.getNatureName(),
+                    entry.getLevel()
+                )
+            );
+        }
+        return converted;
     }
 }

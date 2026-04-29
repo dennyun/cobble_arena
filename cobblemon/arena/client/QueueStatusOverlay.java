@@ -87,19 +87,23 @@ public class QueueStatusOverlay {
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.match_found"
               ).getString()
-            : buildTeamLine();
+            : (
+                isRankedQueue()
+                    ? "Procurando partida ranqueada"
+                    : "Procurando partida rapida"
+            );
         String line2 = matchFound
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.vs_line",
                   opponentName
               ).getString()
-            : buildModeLine();
+            : ("Tempo: " + formatClock(getElapsedSeconds()));
         String line3 = matchFound
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.starting",
                   countdownSeconds
               ).getString()
-            : buildStatusLine();
+            : "";
 
         int paddingX = 8;
         int paddingY = 7;
@@ -114,12 +118,12 @@ public class QueueStatusOverlay {
         );
         int boxHeight = paddingY * 2 + lineHeight * 3 + 1;
 
-        int targetX = screenWidth - boxWidth - 10;
-        int startX = screenWidth + 18;
+        int targetX = (screenWidth - boxWidth) / 2;
+        int startX = targetX;
         int boxX = isClosing
             ? (int) (targetX + (screenWidth - targetX + 18) * slideProgress)
             : (int) (startX + (targetX - startX) * slideProgress);
-        int boxY = Math.max(76, screenHeight / 2 - boxHeight / 2);
+        int boxY = 12;
 
         int panelBg = applyAlpha(PANEL_BG, alpha);
         int borderColor = applyAlpha(BORDER_COLOR, alpha);
@@ -365,6 +369,12 @@ public class QueueStatusOverlay {
         int minutes = seconds / 60;
         int remainder = seconds % 60;
         return minutes > 0 ? minutes + "m " + remainder + "s" : remainder + "s";
+    }
+
+    private String formatClock(int seconds) {
+        int minutes = Math.max(0, seconds) / 60;
+        int remainder = Math.max(0, seconds) % 60;
+        return String.format("%02d:%02d", minutes, remainder);
     }
 
     private int applyAlpha(int color, float alpha) {
