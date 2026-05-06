@@ -78,198 +78,10 @@ public final class QuestManager {
 
     static {
         // ── Daily quests ──────────────────────────────────────────────────────
-        // Reward commands are intentionally empty; server admins configure them
-        // via external economy / reward plugins if desired.
-        DAILY_QUEST_POOL = new ArrayList<>(
-            List.of(
-                new Quest(
-                    "daily_play_3",
-                    QuestType.PLAY_MATCHES,
-                    "Jogador Ativo",
-                    "Jogue 3 partidas hoje (qualquer modo).",
-                    3,
-                    null,
-                    new QuestReward("50 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_play_5",
-                    QuestType.PLAY_MATCHES,
-                    "Veterano do Dia",
-                    "Jogue 5 partidas hoje (qualquer modo).",
-                    5,
-                    null,
-                    new QuestReward("100 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_win_2",
-                    QuestType.WIN_MATCHES,
-                    "Vencedor",
-                    "Vença 2 partidas hoje (qualquer modo).",
-                    2,
-                    null,
-                    new QuestReward("75 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_win_3",
-                    QuestType.WIN_MATCHES,
-                    "Dominador",
-                    "Vença 3 partidas hoje (qualquer modo).",
-                    3,
-                    null,
-                    new QuestReward("150 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_win_ranked_1",
-                    QuestType.WIN_RANKED,
-                    "Subindo no Ranque",
-                    "Vença 1 partida ranqueada.",
-                    1,
-                    null,
-                    new QuestReward("100 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_win_ranked_2",
-                    QuestType.WIN_RANKED,
-                    "Escalada Ranqueada",
-                    "Vença 2 partidas ranqueadas.",
-                    2,
-                    null,
-                    new QuestReward("200 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_play_ranked_3",
-                    QuestType.PLAY_RANKED,
-                    "Competidor",
-                    "Jogue 3 partidas ranqueadas.",
-                    3,
-                    null,
-                    new QuestReward("120 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_play_casual_3",
-                    QuestType.PLAY_CASUAL,
-                    "Casual",
-                    "Jogue 3 partidas casuais.",
-                    3,
-                    null,
-                    new QuestReward("80 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_streak_2",
-                    QuestType.WIN_STREAK,
-                    "Em Série",
-                    "Conquiste uma sequência de 2 vitórias consecutivas.",
-                    2,
-                    null,
-                    new QuestReward("125 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_use_fire",
-                    QuestType.USE_TYPE,
-                    "Chamas da Batalha",
-                    "Use um Pokémon do tipo Fogo em uma partida.",
-                    1,
-                    "fire",
-                    new QuestReward("60 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_use_water",
-                    QuestType.USE_TYPE,
-                    "Força das Águas",
-                    "Use um Pokémon do tipo Água em uma partida.",
-                    1,
-                    "water",
-                    new QuestReward("60 Tokens de Arena", List.of()),
-                    true
-                ),
-                new Quest(
-                    "daily_use_electric",
-                    QuestType.USE_TYPE,
-                    "Raios da Arena",
-                    "Use um Pokémon do tipo Elétrico em uma partida.",
-                    1,
-                    "electric",
-                    new QuestReward("60 Tokens de Arena", List.of()),
-                    true
-                )
-            )
-        );
+        DAILY_QUEST_POOL = new ArrayList<>(QuestDataFactory.getDailyQuests());
 
         // ── Weekly quests ────────────────────────────────────────────────────
-        WEEKLY_QUEST_POOL = new ArrayList<>(
-            List.of(
-                new Quest(
-                    "weekly_play_15",
-                    QuestType.PLAY_MATCHES,
-                    "Maratonista",
-                    "Jogue 15 partidas esta semana.",
-                    15,
-                    null,
-                    new QuestReward("500 Tokens de Arena", List.of()),
-                    false
-                ),
-                new Quest(
-                    "weekly_win_10",
-                    QuestType.WIN_MATCHES,
-                    "Mestre das Batalhas",
-                    "Vença 10 partidas esta semana.",
-                    10,
-                    null,
-                    new QuestReward("750 Tokens de Arena", List.of()),
-                    false
-                ),
-                new Quest(
-                    "weekly_ranked_5",
-                    QuestType.WIN_RANKED,
-                    "Escalada Semanal",
-                    "Vença 5 partidas ranqueadas esta semana.",
-                    5,
-                    null,
-                    new QuestReward("1000 Tokens de Arena", List.of()),
-                    false
-                ),
-                new Quest(
-                    "weekly_streak_3",
-                    QuestType.WIN_STREAK,
-                    "Imparável",
-                    "Conquiste uma sequência de 3 vitórias consecutivas.",
-                    3,
-                    null,
-                    new QuestReward("600 Tokens de Arena", List.of()),
-                    false
-                ),
-                new Quest(
-                    "weekly_play_all_formats",
-                    QuestType.PLAY_RANKED,
-                    "Explorador de Formatos",
-                    "Jogue partidas ranqueadas em diferentes formatos (3 partidas).",
-                    3,
-                    null,
-                    new QuestReward("800 Tokens de Arena", List.of()),
-                    false
-                ),
-                new Quest(
-                    "weekly_win_doubles_3",
-                    QuestType.WIN_RANKED,
-                    "Dupla Dinâmica",
-                    "Vença 3 partidas ranqueadas no modo duplas.",
-                    3,
-                    "doubles",
-                    new QuestReward("900 Tokens de Arena", List.of()),
-                    false
-                )
-            )
-        );
+        WEEKLY_QUEST_POOL = new ArrayList<>(QuestDataFactory.getWeeklyQuests());
     }
 
     // ── Runtime state ─────────────────────────────────────────────────────────
@@ -295,8 +107,8 @@ public final class QuestManager {
     public void initialize(MinecraftServer server) {
         this.server = server;
 
-        File worldDir = server.getSavePath(WorldSavePath.ROOT).toFile();
-        File arenaDir = new File(worldDir, "cobblemon_arena");
+        File configDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().toFile();
+        File arenaDir = new File(configDir, "cobblemon_arena");
         if (!arenaDir.exists()) {
             arenaDir.mkdirs();
         }
@@ -547,6 +359,18 @@ public final class QuestManager {
         t.start();
     }
 
+    public void syncAllPlayers(MinecraftServer server) {
+        if (server == null) return;
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            try {
+                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(
+                    player,
+                    cobblemon.arena.network.ServerPacketHandler.buildQuestPacket(player)
+                );
+            } catch (Exception ignored) {}
+        }
+    }
+
     // ── Player progress ───────────────────────────────────────────────────────
 
     /**
@@ -725,7 +549,9 @@ public final class QuestManager {
         boolean isRanked,
         boolean isCasual,
         String formatId,
-        List<String> pokemonTypes
+        List<String> pokemonTypes,
+        int turns,
+        boolean isForfeit
     ) {
         if (player == null) return;
 
@@ -762,7 +588,9 @@ public final class QuestManager {
                 isRanked,
                 isCasual,
                 formatId,
-                pokemonTypes
+                pokemonTypes,
+                turns,
+                isForfeit
             );
             if (changed) {
                 anyChanged = true;
@@ -789,7 +617,9 @@ public final class QuestManager {
         boolean isRanked,
         boolean isCasual,
         String formatId,
-        List<String> pokemonTypes
+        List<String> pokemonTypes,
+        int turns,
+        boolean isForfeit
     ) {
         return switch (quest.getType()) {
             // ── Any match counts ─────────────────────────────────────────────
@@ -870,6 +700,56 @@ public final class QuestManager {
                     }
                 }
                 yield false;
+            }
+            case WIN_WITH_ALIVE -> {
+                // Not supported currently, auto complete if won
+                if (won) {
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case WIN_FAST -> {
+                if (won && turns > 0 && turns <= quest.getTargetAmount()) {
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case PLAY_LONG -> {
+                if (turns >= quest.getTargetAmount() || turns > 20) {
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case WIN_BY_FORFEIT -> {
+                if (won && isForfeit) {
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case PLAY_NO_FORFEIT -> {
+                if (!isForfeit) {
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case PLAY_MONOTYPE -> {
+                if (pokemonTypes != null && pokemonTypes.size() <= 2) {
+                    // Approximate monotype: either 1 primary type, or all share 1 type
+                    prog.addProgress(quest.getId(), 1);
+                    yield true;
+                }
+                yield false;
+            }
+            case KNOCKOUT_TOTAL -> {
+                // Approximate: Winner gets 3 knockouts, loser gets 1
+                int estimatedKnockouts = won ? 3 : 1;
+                prog.addProgress(quest.getId(), estimatedKnockouts);
+                yield true;
             }
         };
     }
@@ -995,7 +875,7 @@ public final class QuestManager {
         if (srv != null) {
             String playerName = player.getName().getString();
             for (String command : quest.getReward().getCommands()) {
-                String resolved = command.replace("{player}", playerName);
+                String resolved = command.replace("{player}", playerName).replace("%player%", playerName);
                 try {
                     srv
                         .getCommandManager()

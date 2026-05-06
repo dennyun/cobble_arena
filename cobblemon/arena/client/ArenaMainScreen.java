@@ -283,7 +283,18 @@ public class ArenaMainScreen extends ArenaScreenBase {
     // ══════════════════════════════════════════════════════════════════════
 
     private void queueForLadder(ArenaLadder ladder) {
-        ClientPlayNetworking.send(new JoinQueuePacket(ladder.getId()));
+        if (ladder == null) {
+            if (MinecraftClient.getInstance().player != null) {
+                MinecraftClient.getInstance().player.sendMessage(
+                    net.minecraft.text.Text.literal(
+                        "§cErro: formato de batalha inválido ou não configurado."
+                    ),
+                    false
+                );
+            }
+            return;
+        }
+        ClientPlayNetworking.send(new JoinQueuePacket(ladder.getId(), false));
         if (MinecraftClient.getInstance().player != null) {
             MinecraftClient.getInstance().player.sendMessage(
                 Text.translatable(
@@ -308,7 +319,7 @@ public class ArenaMainScreen extends ArenaScreenBase {
     }
 
     private void spectateBattle() {
-        ClientPlayNetworking.send(new SpectateArenaBattlePacket());
+        ClientPlayNetworking.send(new SpectateArenaBattlePacket(java.util.Optional.empty()));
         close();
     }
 
@@ -372,9 +383,12 @@ public class ArenaMainScreen extends ArenaScreenBase {
             gmy
         );
 
-        if (
-            hoveredTooltip != null && !hoveredTooltip.isEmpty()
-        ) graphics.drawTooltip(textRenderer, hoveredTooltip, gmx, gmy);
+        if (hoveredTooltip != null && !hoveredTooltip.isEmpty()) {
+            graphics.getMatrices().push();
+            graphics.getMatrices().translate(0, 0, 1000);
+            graphics.drawTooltip(textRenderer, hoveredTooltip, gmx, gmy);
+            graphics.getMatrices().pop();
+        }
 
         popGuiScale(graphics);
     }
@@ -961,7 +975,7 @@ public class ArenaMainScreen extends ArenaScreenBase {
 
     private static String trimTierTitle(String tier) {
         if ("Grão-Mestre".equals(tier)) return "GM";
-        if ("Sem Rank".equals(tier)) return "Nenhum";
+        if ("Iniciante".equals(tier)) return "Nenhum";
         return tier;
     }
 

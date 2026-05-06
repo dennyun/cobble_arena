@@ -20,13 +20,13 @@ public class ClientPacketHandler {
 
     public static void handleOpenArenaGui(OpenArenaGuiPacket packet) {
         ArenaClientState.update(packet);
-        // Only open the screen if it’s not already showing the Arena GUI.
+        // Only open the screen if it’s not already showing the Arena GUI AND forceOpen is true.
         // When the server resends this packet (e.g. after a match to refresh
         // stats), the screen stays open and just updates its state data.
         MinecraftClient mc = MinecraftClient.getInstance();
         boolean arenaOpen =
             mc.currentScreen instanceof cobblemon.arena.client.ArenaShellScreen;
-        if (!arenaOpen && screenOpener != null) {
+        if (!arenaOpen && packet.forceOpen() && screenOpener != null) {
             screenOpener.run();
         }
     }
@@ -62,11 +62,21 @@ public class ClientPacketHandler {
     public static void handleMatchFound(MatchFoundPacket packet) {
         QueueStatusOverlay overlay = QueueStatusOverlay.getInstance();
         overlay.setMatchFound(packet.opponentName(), packet.countdownSeconds());
+        // Tell ArenaShellScreen to close the queue counter card immediately.
+        // The QueueStatusOverlay continues showing "Partida encontrada!" via
+        // its own top-right HUD; only the in-screen counter is cleared.
+        ArenaClientState.signalMatchFound();
     }
 
     public static void handleArenaBattleTransition(
         ArenaBattleTransitionPacket packet
     ) {
+        // The battle is definitively starting — clear the queue overlay so that
+        // if the player reopens /arena after the battle, they don't see the
+        // queue counter and aren't auto-placed back in queue.
+        QueueStatusOverlay.getInstance().setVisible(false);
+        ArenaClientState.clearQueueRejection();
+
         ArenaBattleClientState.markTransitionStarted(packet.durationTicks());
         ArenaBattleTransitionOverlay.getInstance().start(
             packet.leftPlayerName(),
@@ -75,7 +85,10 @@ public class ClientPacketHandler {
             packet.rightPlayerUuid(),
             packet.leftTeam(),
             packet.rightTeam(),
-            packet.durationTicks()
+            packet.durationTicks(),
+            packet.battleTypeId(),
+            packet.leftPlayerElo(),
+            packet.rightPlayerElo()
         );
         MinecraftClient.getInstance().setScreen(
             new ArenaBattleLeadPreviewScreen()
@@ -109,5 +122,17 @@ public class ClientPacketHandler {
         ArenaClientState.setActiveBattles(packet.activeBattles());
         ArenaClientState.setAvailableArenas(packet.availableArenas());
         ArenaClientState.setTotalArenas(packet.totalArenas());
+    }
+
+    public static void handleRankedSync(ArenaRankedSyncPacket packet) {
+        ArenaClientState.applyLiveRankedSnapshots(packet.rankedLadderSnapshots());
+    }
+
+    public static void handleActiveBattlesUpdate(ActiveBattlesUpdatePacket packet) {
+        ArenaClientState.setActiveBattlesList(packet.activeBattlesList());
+    }
+
+    public static void handleSpectateStatus(cobblemon.arena.network.ArenaSpectateStatusPacket packet) {
+        ArenaClientState.setSpectating(packet.isSpectating());
     }
 }

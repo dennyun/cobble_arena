@@ -5,9 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.registry.RegistryKey;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 
@@ -30,25 +30,28 @@ public class ArenaManager {
 
    public void initialize(RegistryKey<World> dimension, MinecraftServer server) {
       if (this.initialized) {
-         CobblemonArena.LOGGER.warn("ArenaManager ja inicializado!");
+         CobblemonArena.LOGGER.warn("ArenaManager already initialized!");
       } else {
          ServerWorld level = server.getWorld(dimension);
          ArenaGenerationSavedData generationData = level != null ? ArenaGenerationSavedData.get(level) : null;
          boolean shouldBuildStructures = generationData != null && generationData.needsGeneration();
          if (level == null) {
-            CobblemonArena.LOGGER.error("Falha ao inicializar arenas fisicas - dimensao {} nao encontrada", dimension.getValue());
+            CobblemonArena.LOGGER.error("Failed to initialize physical arenas - dimension {} not found", dimension.getValue());
          } else if (shouldBuildStructures) {
-            CobblemonArena.LOGGER.info("Versao {} do layout da arena ausente ou desatualizada - construindo estruturas", generationData.getLayoutVersion());
+            CobblemonArena.LOGGER.info("Arena layout version {} is missing or outdated - building arena structures", generationData.getLayoutVersion());
          } else {
-            CobblemonArena.LOGGER.info("Estruturas da arena ja existem para o layout {} - pulando reconstrucao", generationData.getLayoutVersion());
+            CobblemonArena.LOGGER.info("Arena structures already exist for layout version {} - skipping rebuild", generationData.getLayoutVersion());
          }
 
-         for (int i = 0; i < ARENA_COUNT; i++) {
-            int arenaX = BASE_X + i * ARENA_SPACING;
-            int arenaZ = BASE_Z;
-            BlockPos arenaCenter = new BlockPos(arenaX + 10, ARENA_Y, arenaZ);
-            BlockPos player1Pos = new BlockPos(arenaCenter.getX() - 8, ARENA_Y + 4, arenaCenter.getZ() - 1);
-            BlockPos player2Pos = new BlockPos(arenaCenter.getX() + 8, ARENA_Y + 4, arenaCenter.getZ() - 1);
+         for (int i = 0; i < 10; i++) {
+            BlockPos player1Pos;
+            BlockPos player2Pos;
+            BlockPos arenaCenter;
+            int arenaX = 100000 + i * 1000;
+            int arenaZ = 100000;
+            arenaCenter = new BlockPos(arenaX + 10, 200, arenaZ);
+            player1Pos = new BlockPos(arenaCenter.getX() - 8, 204, arenaCenter.getZ() - 1);
+            player2Pos = new BlockPos(arenaCenter.getX() + 8, 204, arenaCenter.getZ() - 1);
 
             ArenaInstance arena = new ArenaInstance(i, player1Pos, player2Pos, dimension);
             this.arenaPool.add(arena);
@@ -64,14 +67,14 @@ public class ArenaManager {
          }
 
          this.initialized = true;
-         CobblemonArena.LOGGER.info("ArenaManager inicializado com {} arenas", this.arenaPool.size());
+         CobblemonArena.LOGGER.info("ArenaManager initialized with {} arenas", this.arenaPool.size());
       }
    }
 
    public Optional<ArenaInstance> claimArena(UUID sessionId) {
       return this.arenaPool.stream().filter(arena -> !arena.isInUse()).findFirst().map(arena -> {
          arena.claim(sessionId);
-         CobblemonArena.LOGGER.debug("Arena {} reservada pela sessao {}", arena.getArenaId(), sessionId);
+         CobblemonArena.LOGGER.debug("Arena {} claimed by session {}", arena.getArenaId(), sessionId);
          return (ArenaInstance)arena;
       });
    }
@@ -79,14 +82,14 @@ public class ArenaManager {
    public void releaseArena(int arenaId) {
       this.arenaPool.stream().filter(arena -> arena.getArenaId() == arenaId).findFirst().ifPresent(arena -> {
          arena.release();
-         CobblemonArena.LOGGER.debug("Arena {} liberada", arenaId);
+         CobblemonArena.LOGGER.debug("Arena {} released", arenaId);
       });
    }
 
    public void releaseArenaBySession(UUID sessionId) {
       this.arenaPool.stream().filter(arena -> arena.isInUse() && sessionId.equals(arena.getCurrentSessionId())).findFirst().ifPresent(arena -> {
          arena.release();
-         CobblemonArena.LOGGER.debug("Arena {} liberada pela sessao {}", arena.getArenaId(), sessionId);
+         CobblemonArena.LOGGER.debug("Arena {} released by session {}", arena.getArenaId(), sessionId);
       });
    }
 

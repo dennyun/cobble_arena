@@ -86,7 +86,8 @@ public final class MatchmakingQueue {
      */
     public synchronized void joinQueue(
         ServerPlayerEntity player,
-        ArenaLadder ladder
+        ArenaLadder ladder,
+        boolean blockLegendaries
     ) {
         if (player == null || ladder == null) {
             return;
@@ -97,17 +98,24 @@ public final class MatchmakingQueue {
             return;
         }
 
-        int rating = ladder.isRanked()
-            ? StatsManager.getInstance()
+        double rating = 1500.0;
+        double rd = 350.0;
+        
+        if (ladder.isRanked()) {
+            cobblemon.arena.stats.PlayerStats.RankedLadderStats stats = StatsManager.getInstance()
                   .getOrCreateStats(player)
-                  .getRankedRating(ladder.getId())
-            : 1000;
+                  .getOrCreateRankedLadderStats(ladder.getId());
+            rating = stats.getRating();
+            rd = stats.getRd();
+        }
 
         QueueEntry entry = new QueueEntry(
             player.getUuid(),
             player.getName().getString(),
             ladder,
-            rating
+            rating,
+            rd,
+            blockLegendaries
         );
         queue.put(player.getUuid(), entry);
 
@@ -234,7 +242,7 @@ public final class MatchmakingQueue {
             return;
         }
         if (!queue.containsKey(player.getUuid())) {
-            joinQueue(player, ladder);
+            joinQueue(player, ladder, false);
         }
         if (message != null && !message.isBlank()) {
             player.sendMessage(Text.literal(message), false);
@@ -329,8 +337,14 @@ public final class MatchmakingQueue {
         List<QueueEntry> candidates = new ArrayList<>(queue.values());
         List<UUID> matched = new ArrayList<>();
         List<UUID> disconnected = new ArrayList<>();
+        
+        int availableArenas = cobblemon.arena.arena.ArenaManager.getInstance().getAvailableArenaCount();
 
         outer: for (int i = 0; i < candidates.size(); i++) {
+            if (availableArenas <= 0) {
+                break;
+            }
+
             QueueEntry a = candidates.get(i);
             if (matched.contains(a.getPlayerUUID())) {
                 continue;
@@ -401,6 +415,7 @@ public final class MatchmakingQueue {
                     a.getLadder(),
                     true
                 );
+                availableArenas--;
 
                 // Move on to find a match for the next unmatched candidate
                 continue outer;

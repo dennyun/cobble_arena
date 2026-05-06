@@ -16,7 +16,7 @@ public class ArenaHistoryScreen extends ArenaScreenBase {
     // ── Constants ──────────────────────────────────────────────────────────
     private static final DateTimeFormatter TIME_FMT =
         DateTimeFormatter.ofPattern("dd/MM HH:mm");
-    private static final int MATCH_ROW_H = 26;
+    private static final int MATCH_ROW_H = 60; // 26 info + 32 cards pokemon + 2 gap
     private static final int POKEMON_ROW_H = 18;
     private static final int CONTENT_TOP_OFFSET = 114; // guiTop + this
     private static final int CONTENT_BOT_OFFSET = 28; // from guiTop+GUI_HEIGHT
@@ -29,6 +29,16 @@ public class ArenaHistoryScreen extends ArenaScreenBase {
     private int scrollOffset = 0;
     private int contentHeight = 0;
     private boolean dragging = false;
+    /** Tooltip de Pokémon pendente para renderizar após o scissor (evita clipping). */
+    private cobblemon.arena.network.ArenaTransitionPokemonEntryPayload pendingTooltipPk =
+        null;
+    private int pendingTooltipMx = 0,
+        pendingTooltipMy = 0;
+    /** Cache de FloatingState para modelos 3D dos pokemon no histórico. */
+    private final java.util.Map<
+        String,
+        com.cobblemon.mod.common.client.render.models.blockbench.FloatingState
+    > histFloatingStates = new java.util.HashMap<>();
 
     // ─────────────────────────────────────────────────────────────────────
 
@@ -141,14 +151,26 @@ public class ArenaHistoryScreen extends ArenaScreenBase {
         int clipY2 = panelY + panelH - 4;
 
         g.enableScissor(clipX1, clipY1, clipX2, clipY2);
+        g.fill(clipX1, clipY1, clipX2, clipY2, SECTION_ALT);
         int drawY = clipY1 - scrollOffset;
 
+        pendingTooltipPk = null; // Reseta a cada frame
         if (activeTab == HistoryTab.MATCHES) {
             drawMatchRows(g, mx, my, clipX1, drawY, clipX2 - clipX1);
         } else {
             drawPokemonRows(g, clipX1, drawY, clipX2 - clipX1);
         }
         g.disableScissor();
+
+        // Renderiza tooltip de Pokémon fora do scissor (sem clipping)
+        if (pendingTooltipPk != null) {
+            drawHistoryPokemonTooltip(
+                g,
+                pendingTooltipMx,
+                pendingTooltipMy,
+                pendingTooltipPk
+            );
+        }
 
         // ── Scrollbar ─────────────────────────────────────────────────────
         if (contentHeight > panelH - 8) {
@@ -404,7 +426,286 @@ public class ArenaHistoryScreen extends ArenaScreenBase {
                 );
             }
 
+            // ── Cards de Pokémon no estilo vermelho ──────────────────────────
+            java.util.List<
+                cobblemon.arena.network.ArenaTransitionPokemonEntryPayload
+            > ownTeam = e.ownTeam(),
+                oppTeam = e.opponentTeam();
+            int cardSize = 28,
+                cardGap = 2;
+            int tBW = 6 * (cardSize + cardGap) - cardGap;
+            int cardsStartX = x + w / 2 - (tBW * 2 + 10) / 2;
+            int cardsY = rowY + 26;
+
+            for (int p = 0; p < 6; p++) {
+                int csx = cardsStartX + p * (cardSize + cardGap);
+                cobblemon.arena.network.ArenaTransitionPokemonEntryPayload pk =
+                    p < ownTeam.size() ? ownTeam.get(p) : null;
+                boolean hov =
+                    mx >= csx &&
+                    mx < csx + cardSize &&
+                    my >= cardsY &&
+                    my < cardsY + cardSize;
+                drawHistoryPokemonCard(
+                    g,
+                    csx,
+                    cardsY,
+                    cardSize,
+                    pk,
+                    hov,
+                    "o" + i + "_" + p
+                );
+                if (hov && pk != null) {
+                    pendingTooltipPk = pk;
+                    pendingTooltipMx = mx;
+                    pendingTooltipMy = my;
+                }
+            }
+            g.fill(
+                cardsStartX + tBW + 3,
+                cardsY + 3,
+                cardsStartX + tBW + 5,
+                cardsY + cardSize - 3,
+                color(132, 54, 62, 200)
+            );
+            for (int p = 0; p < 6; p++) {
+                int csx = cardsStartX + tBW + 10 + p * (cardSize + cardGap);
+                cobblemon.arena.network.ArenaTransitionPokemonEntryPayload pk =
+                    p < oppTeam.size() ? oppTeam.get(p) : null;
+                boolean hov =
+                    mx >= csx &&
+                    mx < csx + cardSize &&
+                    my >= cardsY &&
+                    my < cardsY + cardSize;
+                drawHistoryPokemonCard(
+                    g,
+                    csx,
+                    cardsY,
+                    cardSize,
+                    pk,
+                    hov,
+                    "p" + i + "_" + p
+                );
+                if (hov && pk != null) {
+                    pendingTooltipPk = pk;
+                    pendingTooltipMx = mx;
+                    pendingTooltipMy = my;
+                }
+            }
+
             rowY += MATCH_ROW_H + 1;
+        }
+    }
+
+    private void drawHistoryPokemonCard(
+        DrawContext g,
+        int sx,
+        int sy,
+        int size,
+        cobblemon.arena.network.ArenaTransitionPokemonEntryPayload pk,
+        boolean hovered,
+        String stateKey
+    ) {
+        int slotBg =
+            pk != null
+                ? (hovered ? color(88, 44, 50, 240) : color(58, 24, 30, 220))
+                : color(30, 10, 14, 200);
+        int bHi = hovered ? color(224, 112, 82, 255) : color(164, 68, 74, 255);
+        int bSh = color(80, 30, 36, 255);
+        g.fill(sx, sy, sx + size, sy + size, color(10, 4, 6, 220));
+        g.fill(sx + 1, sy + 1, sx + size - 1, sy + size - 1, slotBg);
+        g.fill(
+            sx + 1,
+            sy + size - 3,
+            sx + size - 1,
+            sy + size - 1,
+            color(0, 0, 0, 50)
+        );
+        g.fill(sx + 1, sy, sx + size - 1, sy + 1, bHi);
+        g.fill(sx, sy + 1, sx + 1, sy + size - 1, bHi);
+        g.fill(sx + 1, sy + size - 1, sx + size - 1, sy + size, bSh);
+        g.fill(sx + size - 1, sy + 1, sx + size, sy + size - 1, bSh);
+        g.fill(sx + 2, sy + 1, sx + size - 2, sy + 2, color(255, 255, 255, 12));
+        if (pk == null) {
+            var tr =
+                net.minecraft.client.MinecraftClient.getInstance().textRenderer;
+            g.drawText(
+                tr,
+                "○",
+                sx + size / 2 - tr.getWidth("○") / 2,
+                sy + size / 2 - 4,
+                color(80, 60, 60, 180),
+                false
+            );
+            return;
+        }
+        var tr =
+            net.minecraft.client.MinecraftClient.getInstance().textRenderer;
+        String key = pk.speciesKey();
+        boolean rendered = false;
+        if (key != null && !key.isBlank()) {
+            try {
+                var sid = net.minecraft.util.Identifier.of(key);
+                var state = histFloatingStates.computeIfAbsent(stateKey, k ->
+                    new com.cobblemon.mod.common.client.render.models.blockbench.FloatingState()
+                );
+                var rot = new org.joml.Quaternionf().rotationXYZ(
+                    (float) Math.toRadians(12),
+                    (float) Math.toRadians(30),
+                    0f
+                );
+                g.getMatrices().push();
+                g.getMatrices().translate(sx + size / 2f, sy + 4f, 0f);
+                g.getMatrices().scale(1.9f, 1.9f, 1f);
+                com.cobblemon.mod.common.client.gui.PokemonGuiUtilsKt.drawProfilePokemon(
+                    sid,
+                    g.getMatrices(),
+                    rot,
+                    com.cobblemon.mod.common.entity.PoseType.PROFILE,
+                    state,
+                    0f,
+                    3.5f,
+                    true,
+                    false,
+                    false,
+                    1f,
+                    1f,
+                    1f,
+                    1f,
+                    0f,
+                    0f
+                );
+                g.getMatrices().pop();
+                rendered = true;
+            } catch (Exception ignored) {}
+        }
+        if (!rendered) {
+            String nm = pk.speciesName() != null ? pk.speciesName() : "?";
+            String ab = nm.length() > 4 ? nm.substring(0, 4) : nm;
+            float sc = 0.65f;
+            int aw = (int) (tr.getWidth(ab) * sc);
+            g.getMatrices().push();
+            g
+                .getMatrices()
+                .translate(sx + (size - aw) / 2, sy + size / 2 - 4, 0f);
+            g.getMatrices().scale(sc, sc, 1f);
+            g.drawText(tr, ab, 0, 0, color(248, 242, 236, 255), true);
+            g.getMatrices().pop();
+        }
+        if (pk.level() > 0) {
+            String lv = "Nv " + pk.level();
+            float lvSc = 0.55f;
+            g.getMatrices().push();
+            g.getMatrices().translate(sx + 2, sy + size - 8, 0f);
+            g.getMatrices().scale(lvSc, lvSc, 1f);
+            g.drawText(tr, lv, 0, 0, color(199, 170, 150, 255), false);
+            g.getMatrices().pop();
+        }
+        // Item icon renderizado POR ÚLTIMO (garante que fica na frente de tudo)
+        if (pk.heldItemName() != null && !pk.heldItemName().isBlank()) {
+            try {
+                var iid = ArenaBattleTransitionOverlay.resolveItemIdentifier(
+                    pk.heldItemName()
+                );
+                if (iid != null) {
+                    var it = net.minecraft.registry.Registries.ITEM.get(iid);
+                    if (it != null && it != net.minecraft.item.Items.AIR) {
+                        int ix = sx + size - 10,
+                            iy = sy + size - 10;
+
+                        g.getMatrices().push();
+                        g.getMatrices().translate(ix - 2, iy - 2, 300.0); // z=300 garante que fica na frente
+                        g.getMatrices().scale(0.70f, 0.70f, 0.70f);
+                        g.drawItem(new net.minecraft.item.ItemStack(it), 0, 0);
+                        g.getMatrices().pop();
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /** Tooltip exibido ao passar o mouse sobre o slot de item de um Pokémon no histórico. */
+    private void drawHistoryPokemonTooltip(
+        DrawContext g,
+        int mx,
+        int my,
+        cobblemon.arena.network.ArenaTransitionPokemonEntryPayload pk
+    ) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        String pkName =
+            pk.speciesName() != null && !pk.speciesName().isBlank()
+                ? pk.speciesName()
+                : "???";
+        lines.add(pkName + (pk.level() > 0 ? "  Nv." + pk.level() : ""));
+        if (!pk.abilityName().isBlank()) lines.add("Hab: " + pk.abilityName());
+        if (!pk.natureName().isBlank()) lines.add("Nat: " + pk.natureName());
+
+        net.minecraft.item.ItemStack itemStack =
+            net.minecraft.item.ItemStack.EMPTY;
+        String itemName = "";
+        if (pk.heldItemName() != null && !pk.heldItemName().isBlank()) {
+            try {
+                net.minecraft.util.Identifier itemId =
+                    ArenaBattleTransitionOverlay.resolveItemIdentifier(
+                        pk.heldItemName()
+                    );
+                if (itemId != null) {
+                    net.minecraft.item.Item it =
+                        net.minecraft.registry.Registries.ITEM.get(itemId);
+                    if (it != null && it != net.minecraft.item.Items.AIR) {
+                        itemStack = new net.minecraft.item.ItemStack(it);
+                        itemName =
+                            ArenaBattleTransitionOverlay.cleanItemDisplayName(
+                                itemStack.getName().getString()
+                            );
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        boolean hasItem = !itemStack.isEmpty();
+        int itemH = hasItem ? 20 : 0;
+
+        int padX = 6,
+            padY = 4,
+            lineH = 10;
+        int boxW = 0;
+        for (String l : lines)
+            boxW = Math.max(boxW, textRenderer.getWidth(l) + padX * 2);
+        if (hasItem) boxW = Math.max(
+            boxW,
+            18 + textRenderer.getWidth(itemName) + padX * 2
+        );
+        boxW = Math.max(boxW, 120);
+        int boxH = padY * 2 + itemH + lines.size() * lineH;
+
+        int bx = mx + 6;
+        int by = my - boxH - 4;
+        if (bx + boxW > guiLeft + GUI_WIDTH - 4) bx = mx - boxW - 6;
+        if (by < guiTop + 4) by = my + 4;
+
+        g.fill(bx, by, bx + boxW, by + boxH, color(10, 6, 18, 245));
+        g.fill(bx, by, bx + boxW, by + 1, INFO_ACCENT);
+        g.fill(bx, by, bx + 1, by + boxH, INFO_ACCENT);
+        g.fill(bx + boxW - 1, by, bx + boxW, by + boxH, color(60, 50, 80, 200));
+        g.fill(bx, by + boxH - 1, bx + boxW, by + boxH, color(60, 50, 80, 200));
+
+        int ty = by + padY;
+        if (hasItem) {
+            g.drawItem(itemStack, bx + padX, ty + 1);
+            g.drawText(
+                textRenderer,
+                itemName,
+                bx + padX + 18,
+                ty + 5,
+                TEXT_PRIMARY,
+                false
+            );
+            ty += itemH;
+        }
+        for (int li = 0; li < lines.size(); li++) {
+            int col = li == 0 ? RANKED_ACCENT : TEXT_DIM;
+            g.drawText(textRenderer, lines.get(li), bx + padX, ty, col, false);
+            ty += lineH;
         }
     }
 

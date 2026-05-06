@@ -46,8 +46,8 @@ public class StatsManager {
     }
 
     public void initialize(MinecraftServer server) {
-        File worldDir = server.getSavePath(WorldSavePath.ROOT).toFile();
-        File arenaDir = new File(worldDir, "cobblemon_arena");
+        File configDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().toFile();
+        File arenaDir = new File(configDir, "cobblemon_arena");
         if (!arenaDir.exists()) {
             arenaDir.mkdirs();
         }
@@ -119,6 +119,8 @@ public class StatsManager {
     ) {
         PlayerStats winnerStats = this.getOrCreateStats(winner);
         PlayerStats loserStats = this.getOrCreateStats(loser);
+        
+        this.checkAndRecordMonotype(winner, winnerStats);
         String ladderId = this.normalizeLadderId(
             ladder != null ? ladder.getId() : null
         );
@@ -128,39 +130,38 @@ public class StatsManager {
                 : ArenaLadder.defaultRanked().getDisplayName();
         int winnerRatingBefore = winnerStats.getRankedRating(ladderId);
         int loserRatingBefore = loserStats.getRankedRating(ladderId);
-        int winnerRatingChange = EloCalculator.calculateRatingChange(
-            winnerRatingBefore,
-            loserRatingBefore,
+        
+        GlickoCalculator.RPResult winnerRPResult = GlickoCalculator.calculateRP(
+            winnerStats.getOrCreateRankedLadderStats(ladderId),
+            loserStats.getOrCreateRankedLadderStats(ladderId),
             true
         );
-        int loserRatingChange = EloCalculator.calculateRatingChange(
-            loserRatingBefore,
-            winnerRatingBefore,
+        GlickoCalculator.RPResult loserRPResult = GlickoCalculator.calculateRP(
+            loserStats.getOrCreateRankedLadderStats(ladderId),
+            winnerStats.getOrCreateRankedLadderStats(ladderId),
             false
         );
-        winnerStats.recordRankedMatch(ladderId, true, winnerRatingChange);
-        loserStats.recordRankedMatch(ladderId, false, loserRatingChange);
+        
+        int winnerRatingChange = winnerRPResult.rpChange;
+        int loserRatingChange = loserRPResult.rpChange;
+
+        winnerStats.recordRankedMatch(ladderId, true, winnerRPResult);
+        loserStats.recordRankedMatch(ladderId, false, loserRPResult);
         winner.sendMessage(
             Text.literal(
-                "§a§lVITORIA! §7Rating: §f" +
+                "§a§lVITORIA! §7RP: §f" +
                     winnerStats.getRankedRating(ladderId) +
-                    " §7(" +
-                    EloCalculator.formatRatingChange(winnerRatingChange) +
-                    "§7) §8[" +
-                    ladderName +
-                    "]"
+                    " §7(§a+" + winnerRatingChange + "§7) §8[" +
+                    ladderName + "]"
             ),
             false
         );
         loser.sendMessage(
             Text.literal(
-                "§c§lDERROTA! §7Rating: §f" +
+                "§c§lDERROTA! §7RP: §f" +
                     loserStats.getRankedRating(ladderId) +
-                    " §7(" +
-                    EloCalculator.formatRatingChange(loserRatingChange) +
-                    "§7) §8[" +
-                    ladderName +
-                    "]"
+                    " §7(" + (loserRatingChange < 0 ? "§c" : "§7") + loserRatingChange + "§7) §8[" +
+                    ladderName + "]"
             ),
             false
         );
@@ -215,32 +216,40 @@ public class StatsManager {
             true,
             ladderName,
             loser.getName().getString(),
-            winnerRatingChange,
             winnerStats.getRankedRating(ladderId),
-            this.toUsageInputs(winnerTeam)
+            winnerRatingChange,
+            this.toUsageInputs(winnerTeam),
+            this.toHistoryTeam(winnerTeam),
+            this.toHistoryTeam(loserTeam)
         );
         loserStats.recordProfileMatch(
             true,
             false,
             ladderName,
             winner.getName().getString(),
-            loserRatingChange,
             loserStats.getRankedRating(ladderId),
-            this.toUsageInputs(loserTeam)
+            loserRatingChange,
+            this.toUsageInputs(loserTeam),
+            this.toHistoryTeam(loserTeam),
+            this.toHistoryTeam(winnerTeam)
         );
         ArenaRewardService.evaluateMilestoneRewards(winner, winnerStats);
         ArenaRewardService.evaluateMilestoneRewards(loser, loserStats);
         this.saveStatsAsync();
+        cobblemon.arena.access.ArenaAccessService.syncLiveProfile(winner);
+        cobblemon.arena.access.ArenaAccessService.syncLiveProfile(loser);
     }
 
     public void recordQuickMatch(
+        String formatId,
         ServerPlayerEntity winner,
         ServerPlayerEntity loser
     ) {
-        this.recordQuickMatch(winner, loser, List.of(), List.of());
+        this.recordQuickMatch(formatId, winner, loser, List.of(), List.of());
     }
 
     public void recordQuickMatch(
+        String formatId,
         ServerPlayerEntity winner,
         ServerPlayerEntity loser,
         List<ArenaSession.TeamPokemonSnapshot> winnerTeam,
@@ -248,12 +257,14 @@ public class StatsManager {
     ) {
         PlayerStats winnerStats = this.getOrCreateStats(winner);
         PlayerStats loserStats = this.getOrCreateStats(loser);
-        winnerStats.recordQuickMatch(true);
-        loserStats.recordQuickMatch(false);
+        
+        this.checkAndRecordMonotype(winner, winnerStats);
+        winnerStats.recordQuickMatch(formatId, true);
+        loserStats.recordQuickMatch(formatId, false);
         winner.sendMessage(Text.literal("§a§lVITORIA!"), false);
         loser.sendMessage(Text.literal("§c§lDERROTA!"), false);
         CobblemonArena.LOGGER.info(
-            "Partida rapida: {} derrotou {}",
+            "Partida casual: {} derrotou {}",
             winner.getName().getString(),
             loser.getName().getString()
         );
@@ -262,7 +273,7 @@ public class StatsManager {
             new PostMatchResultsPacket(
                 false,
                 true,
-                "Partida Rapida",
+                "Casual",
                 loser.getName().getString(),
                 0,
                 0,
@@ -279,7 +290,7 @@ public class StatsManager {
             new PostMatchResultsPacket(
                 false,
                 false,
-                "Partida Rapida",
+                "Casual",
                 winner.getName().getString(),
                 0,
                 0,
@@ -294,24 +305,180 @@ public class StatsManager {
         winnerStats.recordProfileMatch(
             false,
             true,
-            "Partida Rapida",
+            "Casual",
             loser.getName().getString(),
             0,
             0,
-            this.toUsageInputs(winnerTeam)
+            this.toUsageInputs(winnerTeam),
+            this.toHistoryTeam(winnerTeam),
+            this.toHistoryTeam(loserTeam)
         );
         loserStats.recordProfileMatch(
             false,
             false,
-            "Partida Rapida",
+            "Casual",
             winner.getName().getString(),
             0,
             0,
-            this.toUsageInputs(loserTeam)
+            this.toUsageInputs(loserTeam),
+            this.toHistoryTeam(loserTeam),
+            this.toHistoryTeam(winnerTeam)
         );
         ArenaRewardService.evaluateMilestoneRewards(winner, winnerStats);
         ArenaRewardService.evaluateMilestoneRewards(loser, loserStats);
         this.saveStatsAsync();
+    }
+
+    public void recordRankedDoubleLoss(
+        ServerPlayerEntity player1,
+        ServerPlayerEntity player2,
+        ArenaLadder ladder,
+        List<ArenaSession.TeamPokemonSnapshot> player1Team,
+        List<ArenaSession.TeamPokemonSnapshot> player2Team
+    ) {
+        PlayerStats stats1 = this.getOrCreateStats(player1);
+        PlayerStats stats2 = this.getOrCreateStats(player2);
+        String ladderId = this.normalizeLadderId(
+            ladder != null ? ladder.getId() : null
+        );
+        String ladderName =
+            ladder != null
+                ? ladder.getDisplayName()
+                : ArenaLadder.defaultRanked().getDisplayName();
+        int p1Before = stats1.getRankedRating(ladderId);
+        int p2Before = stats2.getRankedRating(ladderId);
+        
+        GlickoCalculator.RPResult p1RPResult = GlickoCalculator.calculateRP(
+            stats1.getOrCreateRankedLadderStats(ladderId),
+            stats2.getOrCreateRankedLadderStats(ladderId),
+            false
+        );
+        GlickoCalculator.RPResult p2RPResult = GlickoCalculator.calculateRP(
+            stats2.getOrCreateRankedLadderStats(ladderId),
+            stats1.getOrCreateRankedLadderStats(ladderId),
+            false
+        );
+        
+        int p1Delta = p1RPResult.rpChange;
+        int p2Delta = p2RPResult.rpChange;
+
+        stats1.recordRankedMatch(ladderId, false, p1RPResult);
+        stats2.recordRankedMatch(ladderId, false, p2RPResult);
+        // Notifica os dois jogadores sobre a derrota por inatividade e os pontos perdidos
+        player1.sendMessage(
+            net.minecraft.text.Text.literal(
+                "§c§lDERROTA (Inatividade)! §7RP: §f" +
+                    stats1.getRankedRating(ladderId) +
+                    " §7(" + (p1Delta < 0 ? "§c" : "§7") + p1Delta + "§7) §8[" +
+                    ladderName + "]"
+            ),
+            false
+        );
+        player2.sendMessage(
+            net.minecraft.text.Text.literal(
+                "§c§lDERROTA (Inatividade)! §7RP: §f" +
+                    stats2.getRankedRating(ladderId) +
+                    " §7(" + (p2Delta < 0 ? "§c" : "§7") + p2Delta + "§7) §8[" +
+                    ladderName + "]"
+            ),
+            false
+        );
+        stats1.recordProfileMatch(
+            true,
+            false,
+            ladderName,
+            player2.getName().getString(),
+            p1Delta,
+            stats1.getRankedRating(ladderId),
+            this.toUsageInputs(player1Team),
+            this.toHistoryTeam(player1Team),
+            this.toHistoryTeam(player2Team)
+        );
+        stats2.recordProfileMatch(
+            true,
+            false,
+            ladderName,
+            player1.getName().getString(),
+            p2Delta,
+            stats2.getRankedRating(ladderId),
+            this.toUsageInputs(player2Team),
+            this.toHistoryTeam(player2Team),
+            this.toHistoryTeam(player1Team)
+        );
+        this.sendPostMatchResults(
+            player1,
+            new PostMatchResultsPacket(
+                true,
+                false,
+                ladderName,
+                player2.getName().getString(),
+                p1Before,
+                stats1.getRankedRating(ladderId),
+                p1Delta,
+                stats1.getRankedWins(ladderId),
+                stats1.getRankedLosses(ladderId),
+                stats1.getRankedStreak(ladderId),
+                this.getPlayerRank(player1.getUuid(), ladderId),
+                this.getTotalRankedPlayers(ladderId)
+            )
+        );
+        this.sendPostMatchResults(
+            player2,
+            new PostMatchResultsPacket(
+                true,
+                false,
+                ladderName,
+                player1.getName().getString(),
+                p2Before,
+                stats2.getRankedRating(ladderId),
+                p2Delta,
+                stats2.getRankedWins(ladderId),
+                stats2.getRankedLosses(ladderId),
+                stats2.getRankedStreak(ladderId),
+                this.getPlayerRank(player2.getUuid(), ladderId),
+                this.getTotalRankedPlayers(ladderId)
+            )
+        );
+        ArenaRewardService.evaluateMilestoneRewards(player1, stats1);
+        ArenaRewardService.evaluateMilestoneRewards(player2, stats2);
+        this.saveStatsAsync();
+    }
+
+    public void recordQuickDoubleLoss(
+        ServerPlayerEntity player1,
+        ServerPlayerEntity player2,
+        List<ArenaSession.TeamPokemonSnapshot> player1Team,
+        List<ArenaSession.TeamPokemonSnapshot> player2Team
+    ) {
+        PlayerStats stats1 = this.getOrCreateStats(player1);
+        PlayerStats stats2 = this.getOrCreateStats(player2);
+        stats1.recordQuickMatch(false);
+        stats2.recordQuickMatch(false);
+        stats1.recordProfileMatch(
+            false,
+            false,
+            "Casual",
+            player2.getName().getString(),
+            0,
+            0,
+            this.toUsageInputs(player1Team),
+            this.toHistoryTeam(player1Team),
+            this.toHistoryTeam(player2Team)
+        );
+        stats2.recordProfileMatch(
+            false,
+            false,
+            "Casual",
+            player1.getName().getString(),
+            0,
+            0,
+            this.toUsageInputs(player2Team),
+            this.toHistoryTeam(player2Team),
+            this.toHistoryTeam(player1Team)
+        );
+        this.saveStatsAsync();
+        cobblemon.arena.access.ArenaAccessService.syncLiveProfile(player1);
+        cobblemon.arena.access.ArenaAccessService.syncLiveProfile(player2);
     }
 
     public List<PlayerStats> getTopPlayers(int limit) {
@@ -415,7 +582,7 @@ public class StatsManager {
                 result.getCurrentSeason().getSeasonId(),
                 result.getCurrentSeason().getSeasonName(),
                 result.getCurrentSeason().getStartedAtMs(),
-                1000,
+                0,
                 config.getSeasonSoftResetFactor()
             );
         }
@@ -461,7 +628,9 @@ public class StatsManager {
                           entry.getOpponentName(),
                           entry.getRatingDelta(),
                           entry.getRatingAfter(),
-                          entry.getPlayedAtMs()
+                          entry.getPlayedAtMs(),
+                          entry.getOwnTeam(),
+                          entry.getOpponentTeam()
                       )
                   )
                   .toList();
@@ -502,6 +671,7 @@ public class StatsManager {
                   .limit(Math.max(0, limit))
                   .map(entry ->
                       new ArenaPokemonUsageEntryPayload(
+                          entry.getSpeciesKey(),
                           entry.getSpeciesName(),
                           entry.getUses(),
                           entry.getWins(),
@@ -636,6 +806,74 @@ public class StatsManager {
             return converted;
         } else {
             return List.of();
+        }
+    }
+
+    private List<
+        cobblemon.arena.network.ArenaTransitionPokemonEntryPayload
+    > toHistoryTeam(List<ArenaSession.TeamPokemonSnapshot> team) {
+        if (team == null || team.isEmpty()) {
+            return List.of();
+        }
+        List<
+            cobblemon.arena.network.ArenaTransitionPokemonEntryPayload
+        > converted = new ArrayList<>(team.size());
+
+        for (ArenaSession.TeamPokemonSnapshot entry : team) {
+            if (entry == null) continue;
+            converted.add(
+                new cobblemon.arena.network.ArenaTransitionPokemonEntryPayload(
+                    entry.getSpeciesKey(),
+                    entry.getSpeciesName(),
+                    entry.getAbilityName(),
+                    entry.getHeldItemName(),
+                    entry.getTypeNames(),
+                    entry.getMoveNames(),
+                    entry.getNatureName(),
+                    entry.getLevel()
+                )
+            );
+        }
+        return converted;
+    }
+
+    private void checkAndRecordMonotype(ServerPlayerEntity player, PlayerStats stats) {
+        List<com.cobblemon.mod.common.pokemon.Pokemon> party = cobblemon.arena.ladder.ArenaPartyValidator.getPartyPokemon(player);
+        if (party == null || party.isEmpty()) return;
+        
+        java.util.Set<String> commonTypes = new java.util.HashSet<>();
+        boolean first = true;
+        for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
+            java.util.Set<String> pTypes = new java.util.HashSet<>();
+            try {
+                if (p.getSpecies().getPrimaryType() != null) pTypes.add(p.getSpecies().getPrimaryType().getName().toLowerCase(java.util.Locale.ROOT));
+                if (p.getSpecies().getSecondaryType() != null) pTypes.add(p.getSpecies().getSecondaryType().getName().toLowerCase(java.util.Locale.ROOT));
+            } catch (Exception ignored) {}
+            
+            if (first) {
+                commonTypes.addAll(pTypes);
+                first = false;
+            } else {
+                commonTypes.retainAll(pTypes);
+            }
+        }
+        
+        for (String type : commonTypes) {
+            stats.addMonotypeWin(type);
+        }
+    }
+    
+    public void recordMatchTurns(ServerPlayerEntity p1, ServerPlayerEntity p2, int turns) {
+        if (turns > 0) {
+            if (p1 != null) {
+                PlayerStats s1 = this.getOrCreateStats(p1);
+                s1.addTurnsPlayed(turns);
+            }
+            if (p2 != null) {
+                PlayerStats s2 = this.getOrCreateStats(p2);
+                s2.addTurnsPlayed(turns);
+            }
+            this.saveStatsAsync();
         }
     }
 }

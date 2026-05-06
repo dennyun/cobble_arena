@@ -61,8 +61,8 @@ public class ArenaSpectatorManager {
                   player.sendMessage(Text.literal("§7Nao ha batalhas acontecendo nas arenas no momento."), false);
                } else {
                   ArenaSession session = sessions.get(player.getRandom().nextInt(sessions.size()));
-                  PokemonBattle battle = BattleRegistry.getBattle(session.getBattleId());
-                  if (battle != null && !battle.getEnded()) {
+                  PokemonBattle battle = session.getBattleId() != null ? BattleRegistry.getBattle(session.getBattleId()) : null;
+                  if (battle == null || !battle.getEnded()) {
                      ServerWorld arenaLevel = player.getServer().getWorld(session.getArena().getDimension());
                      if (arenaLevel == null) {
                         player.sendMessage(Text.literal("§cEssa arena nao esta disponivel para espectadores no momento."), false);
@@ -80,12 +80,18 @@ public class ArenaSpectatorManager {
                                     player.getPos(),
                                     player.getWorld().getRegistryKey(),
                                     player.getYaw(),
-                                    player.getPitch()
+                                    player.getPitch(),
+                                    player.interactionManager.getGameMode()
                                  )
                               );
-                           this.applyMovementLock(player);
+                           player.changeGameMode(net.minecraft.world.GameMode.SPECTATOR);
+                           player.sendAbilitiesUpdate();
+                           cobblemon.arena.access.ArenaNet.send(player, new cobblemon.arena.network.ArenaSpectateStatusPacket(true));
+                           
                            this.teleportToSeat(player, arenaLevel, seat, session.getArena().getBattleCenter());
-                           SpectateBattleHandler.INSTANCE.spectateBattle(session.getPlayer1(), player);
+                           if (battle != null && session.getBattleId() != null) {
+                               SpectateBattleHandler.INSTANCE.spectateBattle(session.getPlayer1(), player);
+                           }
                            player.sendMessage(
                               Text.literal(
                                  "§aAssistindo Arena " + (session.getArena().getArenaId() + 1) + ". Use o botao de voltar da batalha para sair do modo espectador."
@@ -105,6 +111,71 @@ public class ArenaSpectatorManager {
       }
    }
 
+   public synchronized void spectateSpecificBattle(ServerPlayerEntity player, UUID sessionId) {
+      if (player != null && player.getServer() != null) {
+         if (this.isSpectatingArena(player)) {
+            player.sendMessage(Text.literal("§eVoce ja esta assistindo uma batalha de arena."), false);
+         } else if (ArenaBattleManager.getInstance().isInArena(player)) {
+            player.sendMessage(Text.literal("§cVoce nao pode assistir enquanto estiver em uma batalha de arena."), false);
+         } else if (PlayerExtensionsKt.isInBattle(player)) {
+            player.sendMessage(Text.literal("§cVoce nao pode assistir enquanto estiver em batalha."), false);
+         } else {
+            MatchmakingQueue queue = MatchmakingQueue.getInstance();
+            if (!queue.isInQueue(player) && !queue.isInPendingMatch(player.getUuid())) {
+               ArenaSession session = ArenaBattleManager.getInstance().getSession(sessionId);
+               if (session == null || !session.isActive()) {
+                  player.sendMessage(Text.literal("§cEsta batalha nao esta mais ativa."), false);
+               } else {
+                  PokemonBattle battle = session.getBattleId() != null ? BattleRegistry.getBattle(session.getBattleId()) : null;
+                  if (battle == null || !battle.getEnded()) {
+                     ServerWorld arenaLevel = player.getServer().getWorld(session.getArena().getDimension());
+                     if (arenaLevel == null) {
+                        player.sendMessage(Text.literal("§cEssa arena nao esta disponivel para espectadores no momento."), false);
+                     } else {
+                        BlockPos seat = this.findSpectatorSeat(arenaLevel, session.getArena());
+                        if (seat == null) {
+                           player.sendMessage(Text.literal("§cNao foi possivel encontrar um assento livre de espectador nessa arena."), false);
+                        } else {
+                           this.spectators
+                              .put(
+                                 player.getUuid(),
+                                 new ArenaSpectatorManager.SpectatorState(
+                                    session.getSessionId(),
+                                    session.getBattleId(),
+                                    player.getPos(),
+                                    player.getWorld().getRegistryKey(),
+                                    player.getYaw(),
+                                    player.getPitch(),
+                                    player.interactionManager.getGameMode()
+                                 )
+                              );
+                           player.changeGameMode(net.minecraft.world.GameMode.SPECTATOR);
+                           player.sendAbilitiesUpdate();
+                           cobblemon.arena.access.ArenaNet.send(player, new cobblemon.arena.network.ArenaSpectateStatusPacket(true));
+                           
+                           this.teleportToSeat(player, arenaLevel, seat, session.getArena().getBattleCenter());
+                           if (battle != null && session.getBattleId() != null) {
+                               SpectateBattleHandler.INSTANCE.spectateBattle(session.getPlayer1(), player);
+                           }
+                           player.sendMessage(
+                              Text.literal(
+                                 "§aAssistindo Arena " + (session.getArena().getArenaId() + 1) + ". Use o botao de voltar da batalha para sair do modo espectador."
+                              ),
+                              false
+                           );
+                        }
+                     }
+                  } else {
+                     player.sendMessage(Text.literal("§cEsta batalha nao esta mais ativa."), false);
+                  }
+               }
+            } else {
+               player.sendMessage(Text.literal("§cVoce nao pode assistir enquanto estiver na fila ou na contagem regressiva da partida."), false);
+            }
+         }
+      }
+   }
+
    public synchronized void tick(MinecraftServer server) {
       if (server != null && !this.spectators.isEmpty()) {
          for (UUID playerId : new ArrayList<>(this.spectators.keySet())) {
@@ -114,12 +185,32 @@ public class ArenaSpectatorManager {
                if (player == null) {
                   this.spectators.remove(playerId);
                } else {
-                  PokemonBattle battle = BattleRegistry.getBattle(state.battleId());
+                  PokemonBattle battle = state.battleId() != null ? BattleRegistry.getBattle(state.battleId()) : null;
                   ArenaSession session = ArenaBattleManager.getInstance().getSession(state.sessionId());
-                  boolean shouldRestore = battle == null || battle.getEnded() || session == null || !battle.getSpectators().contains(playerId);
+                  
+                  // Se o battleId estava nulo mas a sessão agora tem, atualizar e spectate
+                  if (state.battleId() == null && session != null && session.getBattleId() != null) {
+                      state = new ArenaSpectatorManager.SpectatorState(
+                          state.sessionId(), session.getBattleId(), state.position(), state.dimension(), state.yRot(), state.xRot(), state.originalGameMode()
+                      );
+                      this.spectators.put(playerId, state);
+                      battle = BattleRegistry.getBattle(session.getBattleId());
+                      if (battle != null) {
+                          SpectateBattleHandler.INSTANCE.spectateBattle(session.getPlayer1(), player);
+                      }
+                  }
+                  
+                  boolean shouldRestore = session == null || !session.isActive() || battle == null;
                   if (shouldRestore) {
                      this.restorePlayer(player, state, false);
                      this.spectators.remove(playerId);
+                  } else if (session != null) {
+                     // Check boundary
+                     BlockPos center = session.getArena().getBattleCenter();
+                     if (player.squaredDistanceTo(center.toCenterPos()) > 900.0) { // ~30 blocks
+                         player.teleport(player.getServerWorld(), center.getX() + 0.5, center.getY() + 10, center.getZ() + 0.5, player.getYaw(), player.getPitch());
+                         player.sendMessage(Text.literal("§cVoce não pode ir para tão longe da arena."), true);
+                     }
                   }
                }
             }
@@ -136,7 +227,20 @@ public class ArenaSpectatorManager {
                battle.getSpectators().remove(player.getUuid());
             }
 
-            this.removeMovementLock(player);
+            this.restorePlayerMode(player, state);
+         }
+      }
+   }
+
+   public synchronized void leaveSpectate(ServerPlayerEntity player) {
+      if (player != null) {
+         ArenaSpectatorManager.SpectatorState state = this.spectators.remove(player.getUuid());
+         if (state != null) {
+            PokemonBattle battle = state.battleId() != null ? BattleRegistry.getBattle(state.battleId()) : null;
+            if (battle != null) {
+               battle.getSpectators().remove(player.getUuid());
+            }
+            this.restorePlayer(player, state, true);
          }
       }
    }
@@ -162,13 +266,25 @@ public class ArenaSpectatorManager {
       }
    }
 
-   private void restorePlayer(ServerPlayerEntity player, ArenaSpectatorManager.SpectatorState state, boolean notify) {
-      this.removeMovementLock(player);
+    private void restorePlayerMode(ServerPlayerEntity player, ArenaSpectatorManager.SpectatorState state) {
+       player.changeGameMode(state.originalGameMode());
+       player.setInvisible(false);
+       if (state.originalGameMode() != net.minecraft.world.GameMode.CREATIVE && state.originalGameMode() != net.minecraft.world.GameMode.SPECTATOR) {
+           player.getAbilities().allowFlying = false;
+           player.getAbilities().flying = false;
+       }
+       player.sendAbilitiesUpdate();
+       cobblemon.arena.access.ArenaNet.send(player, new cobblemon.arena.network.ArenaSpectateStatusPacket(false));
+    }
+
+    private void restorePlayer(ServerPlayerEntity player, ArenaSpectatorManager.SpectatorState state, boolean notify) {
+       this.restorePlayerMode(player, state);
       ServerWorld targetLevel = player.getServer().getWorld(state.dimension());
       if (targetLevel != null) {
          BlockPos targetPos = BlockPos.ofFloored(state.position());
          this.ensureChunkLoaded(targetLevel, targetPos);
          player.teleport(targetLevel, state.position().x, state.position().y, state.position().z, state.yRot(), state.xRot());
+         player.fallDistance = 0.0F;
          this.ensureChunkLoaded(targetLevel, targetPos);
       }
 
@@ -205,7 +321,7 @@ public class ArenaSpectatorManager {
       }
 
       if (candidates.isEmpty()) {
-         return null;
+         return center.up(2);
       } else {
          candidates.sort(Comparator.comparingDouble(pos -> pos.getSquaredDistance(center)));
          int startIndex = level.getRandom().nextInt(candidates.size());
@@ -217,7 +333,7 @@ public class ArenaSpectatorManager {
             }
          }
 
-         return null;
+         return center.up(2);
       }
    }
 
@@ -249,6 +365,7 @@ public class ArenaSpectatorManager {
       double deltaZ = focus.getZ() + 0.5 - viewZ;
       float yaw = (float)(Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
       player.teleport(level, viewX, viewY, viewZ, yaw, 0.0F);
+      player.fallDistance = 0.0F;
       this.ensureChunkLoaded(level, seat);
    }
 
@@ -256,46 +373,11 @@ public class ArenaSpectatorManager {
       level.getChunk(pos.getX() >> 4, pos.getZ() >> 4);
    }
 
-   private void applyMovementLock(ServerPlayerEntity player) {
-      EntityAttributeInstance movementSpeed = player.getAttributeInstance(EntityAttributes.GENERIC_MOVEMENT_SPEED);
-      if (movementSpeed != null) {
-         movementSpeed.removeModifier(ArenaSpectatorManager.SpectatorModifierIds.MOVEMENT_LOCK);
-         double currentSpeed = movementSpeed.getValue();
-         movementSpeed.addPersistentModifier(
-            new EntityAttributeModifier(
-               ArenaSpectatorManager.SpectatorModifierIds.MOVEMENT_LOCK,
-               -currentSpeed,
-               EntityAttributeModifier.Operation.ADD_VALUE
-            )
-         );
-      }
-
-      EntityAttributeInstance jumpStrength = player.getAttributeInstance(EntityAttributes.GENERIC_JUMP_STRENGTH);
-      if (jumpStrength != null) {
-         jumpStrength.removeModifier(ArenaSpectatorManager.SpectatorModifierIds.JUMP_LOCK);
-         jumpStrength.addPersistentModifier(
-            new EntityAttributeModifier(ArenaSpectatorManager.SpectatorModifierIds.JUMP_LOCK, -1.0, EntityAttributeModifier.Operation.ADD_VALUE)
-         );
-      }
-   }
-
-   private void removeMovementLock(ServerPlayerEntity player) {
-      EntityAttributeInstance movementSpeed = player.getAttributeInstance(EntityAttributes.GENERIC_MOVEMENT_SPEED);
-      if (movementSpeed != null) {
-         movementSpeed.removeModifier(ArenaSpectatorManager.SpectatorModifierIds.MOVEMENT_LOCK);
-      }
-
-      EntityAttributeInstance jumpStrength = player.getAttributeInstance(EntityAttributes.GENERIC_JUMP_STRENGTH);
-      if (jumpStrength != null) {
-         jumpStrength.removeModifier(ArenaSpectatorManager.SpectatorModifierIds.JUMP_LOCK);
-      }
-   }
-
    private static final class SpectatorModifierIds {
       private static final Identifier MOVEMENT_LOCK = Identifier.of("cobblemon_arena", "spectator_movement_lock");
       private static final Identifier JUMP_LOCK = Identifier.of("cobblemon_arena", "spectator_jump_lock");
    }
 
-   private record SpectatorState(UUID sessionId, UUID battleId, Vec3d position, RegistryKey<World> dimension, float yRot, float xRot) {
+   private record SpectatorState(UUID sessionId, UUID battleId, net.minecraft.util.math.Vec3d position, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension, float yRot, float xRot, net.minecraft.world.GameMode originalGameMode) {
    }
 }

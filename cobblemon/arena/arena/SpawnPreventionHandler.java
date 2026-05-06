@@ -117,4 +117,26 @@ public class SpawnPreventionHandler {
 
         return false;
     }
+
+    public static void registerBlockProtection() {
+        net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents.BEFORE.register((world, player, pos, state, entity) -> {
+            if (isInArenaArea(pos) && !player.hasPermissionLevel(2)) {
+                player.sendMessage(net.minecraft.text.Text.literal("§cVoce nao pode quebrar blocos na arena."), true);
+                return false;
+            }
+            return true;
+        });
+
+        net.fabricmc.fabric.api.event.player.UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
+            if (isInArenaArea(hitResult.getBlockPos()) && !player.hasPermissionLevel(2)) {
+                if (!player.getMainHandStack().isEmpty() && player.getMainHandStack().getItem() instanceof net.minecraft.item.BlockItem) {
+                    player.sendMessage(net.minecraft.text.Text.literal("§cVoce nao pode colocar blocos na arena."), true);
+                    return net.minecraft.util.ActionResult.FAIL;
+                }
+            }
+            return net.minecraft.util.ActionResult.PASS;
+        });
+
+        CobblemonArena.LOGGER.info("Handler de protecao de blocos na arena registrado");
+    }
 }

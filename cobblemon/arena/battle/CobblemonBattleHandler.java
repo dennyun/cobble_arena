@@ -81,6 +81,17 @@ public class CobblemonBattleHandler {
             }
 
             if (winner != null && loser != null && session != null) {
+                // Se foi timeout mútuo, stats já foram registradas — pula direto para endArena
+                if (session.isMutualTimeoutEnded()) {
+                    CobblemonArena.LOGGER.info(
+                        "BATTLE_VICTORY por timeout mútuo — encerrando sessão sem stats duplicadas"
+                    );
+                    ArenaBattleManager.getInstance().endArena(
+                        session.getSessionId()
+                    );
+                    return Unit.INSTANCE;
+                }
+
                 // ── Stats recording (unchanged) ───────────────────────
                 if (session.isQueueMatch()) {
                     if (session.isRankedMatch()) {
@@ -95,14 +106,16 @@ public class CobblemonBattleHandler {
                             "Resultado de partida ranqueada registrado"
                         );
                     } else {
+                        String formatId = session.getLadder() != null ? session.getLadder().getBattleTypeId() : "default";
                         StatsManager.getInstance().recordQuickMatch(
+                            formatId,
                             winner,
                             loser,
                             session.getTeamSnapshot(winner),
                             session.getTeamSnapshot(loser)
                         );
                         CobblemonArena.LOGGER.info(
-                            "Resultado de partida rapida registrado"
+                            "Resultado de partida casual registrado"
                         );
                     }
                 }
@@ -124,13 +137,21 @@ public class CobblemonBattleHandler {
                     List<String> winnerTypes = extractPokemonTypes(winner);
                     List<String> loserTypes = extractPokemonTypes(loser);
 
+                    int turns = 0;
+                    try {
+                        turns = event.getBattle().getTurn();
+                    } catch (Exception ignored) {}
+                    StatsManager.getInstance().recordMatchTurns(winner, loser, turns);
+
                     QuestManager.getInstance().onMatchCompleted(
                         winner,
                         true,
                         isRanked,
                         isCasual,
                         formatId,
-                        winnerTypes
+                        winnerTypes,
+                        turns,
+                        false
                     );
                     QuestManager.getInstance().onMatchCompleted(
                         loser,
@@ -138,7 +159,9 @@ public class CobblemonBattleHandler {
                         isRanked,
                         isCasual,
                         formatId,
-                        loserTypes
+                        loserTypes,
+                        turns,
+                        false
                     );
                 }
 
@@ -200,6 +223,19 @@ public class CobblemonBattleHandler {
                             serverPlayer
                         );
                     if (session != null && session.isActive()) {
+                        // Se foi timeout mútuo, stats já foram registradas em handleMutualTimeoutForfeit
+                        // Encerra a sessão sem registrar stats novamente
+                        if (session.isMutualTimeoutEnded()) {
+                            CobblemonArena.LOGGER.info(
+                                "BATTLE_FLED por timeout mútuo — encerrando sessão sem stats duplicadas: {}",
+                                session.getSessionId()
+                            );
+                            ArenaBattleManager.getInstance().endArena(
+                                session.getSessionId()
+                            );
+                            return Unit.INSTANCE;
+                        }
+
                         // The fleeing player loses; the opponent implicitly wins.
                         // Quest tracking: the fleeing player still "played" a match.
                         if (session.isQueueMatch()) {
@@ -215,6 +251,11 @@ public class CobblemonBattleHandler {
                             String formatId =
                                 ladder != null ? ladder.getId() : "";
 
+                            int turns = 0;
+                            try {
+                                turns = event.getBattle().getTurn();
+                            } catch (Exception ignored) {}
+
                             // Fleeing player is the loser.
                             QuestManager.getInstance().onMatchCompleted(
                                 serverPlayer,
@@ -222,7 +263,9 @@ public class CobblemonBattleHandler {
                                 isRanked,
                                 isCasual,
                                 formatId,
-                                extractPokemonTypes(serverPlayer)
+                                extractPokemonTypes(serverPlayer),
+                                turns,
+                                true
                             );
 
                             // Opponent is the winner (if still online).
@@ -236,7 +279,9 @@ public class CobblemonBattleHandler {
                                     isRanked,
                                     isCasual,
                                     formatId,
-                                    extractPokemonTypes(opponent)
+                                    extractPokemonTypes(opponent),
+                                    turns,
+                                    true
                                 );
                             }
                         }

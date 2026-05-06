@@ -35,30 +35,15 @@ final class ArenaRankBadgeRenderer {
     }
 
     private static void drawRankBadgeRight(DrawContext graphics, TextRenderer font, int rightX, int y, String text, int accent, float scale) {
-        int emblemWidth = 15;
+        int r = 6;
         int textWidth = Math.round(font.getWidth(text) * scale);
-        int width = textWidth + emblemWidth + 14;
-        int x = rightX - width;
-        int height = 13;
-        int topGlow = mix(accent, color(255, 255, 255, 255), 0.22F);
-        int sideShadow = darken(accent, 40);
-        int emblemBg = mix(BADGE_BG_ALT, accent, 0.12F);
-
-        graphics.fill(x, y, rightX, y + height, BADGE_BG);
-        graphics.fill(x + 1, y + 1, rightX - 1, y + height - 1, BADGE_BG_ALT);
-        graphics.fill(x, y, rightX, y + 1, topGlow);
-        graphics.fill(x, y + height - 1, rightX, y + height, darken(accent, 28));
-        graphics.fill(x, y, x + 1, y + height, accent);
-        graphics.fill(rightX - 1, y, rightX, y + height, sideShadow);
-        graphics.fill(x + 1, y + 1, rightX - 1, y + 2, color(255, 255, 255, 10));
-        graphics.fill(x + 2, y + 2, x + emblemWidth, y + height - 2, emblemBg);
-        graphics.fill(x + emblemWidth, y + 2, x + emblemWidth + 1, y + height - 2, DIVIDER);
-        graphics.fill(x + 2, y + height - 3, rightX - 1, y + height - 1, color(0, 0, 0, 28));
-
-        drawRankEmblem(graphics, x + 4, y + 2, text, accent);
-        int textZoneLeft = x + emblemWidth + 3;
-        int textZoneWidth = rightX - 2 - textZoneLeft;
-        drawCenteredScaledText(graphics, font, text, textZoneLeft + textZoneWidth / 2, y + 3, TEXT_PRIMARY, scale);
+        int totalWidth = textWidth + r*2 + 8;
+        int x = rightX - totalWidth;
+        
+        drawCircularBadge(graphics, x + r, y + r, r, text);
+        
+        int textColor = text.toLowerCase(java.util.Locale.ROOT).contains("sem rank") ? color(102, 95, 138, 255) : accent;
+        drawCenteredScaledText(graphics, font, text, x + r*2 + 4 + textWidth/2, y + 2, textColor, scale);
     }
 
     private static void drawRankEmblem(DrawContext graphics, int x, int y, String tier, int accent) {
@@ -157,10 +142,120 @@ final class ArenaRankBadgeRenderer {
     }
 
     private static boolean isRankTier(String text) {
-        return switch (text) {
-            case "Unranked", "Bronze", "Silver", "Gold", "Platinum", "Diamond", "Master", "Grandmaster" -> true;
-            default -> false;
-        };
+        String t = text.toLowerCase(java.util.Locale.ROOT);
+        return t.contains("sem rank") || t.contains("bronze") || t.contains("prata") || 
+               t.contains("ouro") || t.contains("platina") || t.contains("diamante") || 
+               t.contains("mestre") || t.contains("grão") || t.contains("grao");
+    }
+
+    public static void drawCircularBadge(DrawContext c, int cx, int cy, int r, String tierName) {
+        tierName = tierName.toLowerCase(java.util.Locale.ROOT);
+        
+        int bgRing = color(100, 100, 100, 255);
+        int bgInner = color(130, 130, 130, 255);
+        int iconCol = color(80, 80, 80, 255);
+        String txt = "?";
+
+        if (tierName.contains("bronze")) {
+            bgRing = color(150, 80, 40, 255);
+            bgInner = color(180, 100, 50, 255);
+            iconCol = color(100, 40, 10, 255);
+            txt = "v";
+        } else if (tierName.contains("prata")) {
+            bgRing = color(160, 170, 180, 255);
+            bgInner = color(200, 210, 220, 255);
+            iconCol = color(230, 240, 250, 255);
+            txt = "W";
+        } else if (tierName.contains("ouro")) {
+            bgRing = color(210, 150, 20, 255);
+            bgInner = color(255, 200, 40, 255);
+            iconCol = color(255, 240, 100, 255);
+            txt = "V";
+        } else if (tierName.contains("platina")) {
+            bgRing = color(140, 180, 200, 255);
+            bgInner = color(180, 220, 240, 255);
+            iconCol = color(220, 240, 255, 255);
+            txt = "V"; 
+        } else if (tierName.contains("diamante")) {
+            bgRing = color(100, 200, 255, 255);
+            bgInner = color(160, 230, 255, 255);
+            iconCol = color(220, 255, 255, 255);
+            txt = "V";
+        } else if (tierName.contains("grão") || tierName.contains("grao")) {
+            bgRing = color(220, 180, 40, 255); 
+            bgInner = color(60, 20, 80, 255);  
+            iconCol = color(255, 100, 255, 255); 
+            txt = "V";
+        } else if (tierName.contains("mestre")) {
+            bgRing = color(40, 20, 40, 255);
+            bgInner = color(80, 10, 20, 255);
+            iconCol = color(255, 40, 40, 255);
+            txt = "V";
+        }
+
+        fillCircle(c, cx, cy + 1, r, color(20, 20, 20, 255));
+        fillCircle(c, cx, cy, r, bgRing);
+        fillCircle(c, cx, cy, (int)(r * 0.75f), bgInner);
+        
+        if (txt.equals("?")) {
+            drawCenteredScaledText(c, net.minecraft.client.MinecraftClient.getInstance().textRenderer, "?", cx, cy - (int)(r*0.4f), iconCol, r / 6.0f);
+        } else if (txt.equals("v")) { 
+            drawDownwardArrow(c, cx, cy, r/3, iconCol);
+        } else if (txt.equals("W")) { 
+            drawWedge(c, cx, cy, r/3, iconCol);
+            c.fill(cx - r/2, cy - r/3, cx - r/2 + 2, cy + r/4, iconCol);
+            c.fill(cx + r/2 - 2, cy - r/3, cx + r/2, cy + r/4, iconCol);
+            c.fill(cx - r/2, cy + r/4 - 2, cx + r/2, cy + r/4, iconCol);
+        } else if (txt.equals("V")) { 
+            drawWedge(c, cx, cy - r/6, r/2, iconCol);
+            if (tierName.contains("platina") || tierName.contains("diamante") || tierName.contains("mestre")) {
+                drawWedge(c, cx, cy + r/4, r/3, iconCol);
+            }
+            if (tierName.contains("diamante")) {
+                fillCircle(c, cx, cy, r/2, color(255, 255, 255, 80));
+            }
+        }
+        
+        c.fill(cx - r/2, cy - r + 1, cx + r/2, cy - r + 2, color(255, 255, 255, 80));
+        
+        if (tierName.contains("platina")) {
+            c.fill(cx, cy - r + 2, cx + 1, cy - r + 4, color(80,80,80,255));
+            c.fill(cx, cy + r - 4, cx + 1, cy + r - 2, color(80,80,80,255));
+            c.fill(cx - r + 2, cy, cx - r + 4, cy + 1, color(80,80,80,255));
+            c.fill(cx + r - 4, cy, cx + r - 2, cy + 1, color(80,80,80,255));
+        } else if (tierName.contains("mestre")) {
+            int rc = color(255, 20, 20, 255);
+            c.fill(cx, cy - r + 2, cx + 2, cy - r + 4, rc);
+            c.fill(cx, cy + r - 4, cx + 2, cy + r - 2, rc);
+            c.fill(cx - r + 2, cy, cx - r + 4, cy + 2, rc);
+            c.fill(cx + r - 4, cy, cx + r - 2, cy + 2, rc);
+        } else if (tierName.contains("grão") || tierName.contains("grao")) {
+            c.fill(cx - r/2, cy - r/3, cx - r/2 + 1, cy - r/3 + 1, color(255,255,255,255));
+            c.fill(cx + r/3, cy - r/2, cx + r/3 + 1, cy - r/2 + 1, color(150,200,255,255));
+            c.fill(cx - r/4, cy + r/2, cx - r/4 + 1, cy + r/2 + 1, color(255,200,255,255));
+        }
+    }
+
+    private static void fillCircle(DrawContext c, int cx, int cy, int r, int color) {
+        for (int y = -r; y <= r; y++) {
+            int dx = (int) Math.sqrt(r * r - y * y);
+            c.fill(cx - dx, cy + y, cx + dx + 1, cy + y + 1, color);
+        }
+    }
+
+    private static void drawWedge(DrawContext c, int cx, int cy, int size, int color) {
+        for (int y = -size; y <= size; y++) {
+            int w = size - Math.abs(y);
+            c.fill(cx - w, cy + y, cx + w + 1, cy + y + 1, color);
+        }
+    }
+
+    private static void drawDownwardArrow(DrawContext c, int cx, int cy, int size, int color) {
+        c.fill(cx - size/4, cy - size, cx + size/4 + 1, cy, color);
+        for (int y = 0; y <= size; y++) {
+            int w = size - y;
+            c.fill(cx - w, cy + y, cx + w + 1, cy + y + 1, color);
+        }
     }
 
     private static int color(int r, int g, int b, int a) {

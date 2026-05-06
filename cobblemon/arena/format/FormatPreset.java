@@ -318,12 +318,8 @@ public enum FormatPreset {
 
         Set<String> rules = new LinkedHashSet<>(base.getRuleSet());
 
-        if (isMonotype()) {
-            rules.add("Same Type Clause");
-        }
-
-        if (isRanked()) {
-            // Explicit enforcement of VGC clauses in the Cobblemon rule set
+        // Nós aplicamos as cláusulas ranqueadas se isRanked for verdadeiro
+        if (isRanked()) {  // Explicit enforcement of VGC clauses in the Cobblemon rule set
             rules.add("Species Clause");
             rules.add("Item Clause");
         }

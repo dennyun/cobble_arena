@@ -16,7 +16,7 @@ public class StyledButton extends ButtonWidget {
    private static final int TEXT_PRIMARY = color(255, 245, 240, 255);
    private static final int TEXT_DIM = color(130, 100, 90, 255);
    private final TextRenderer font = MinecraftClient.getInstance().textRenderer;
-   private final int accentColor;
+   private int accentColor;
 
    public StyledButton(int x, int y, int width, int height, Text message, PressAction onPress) {
       this(x, y, width, height, message, onPress, -1);
@@ -24,6 +24,10 @@ public class StyledButton extends ButtonWidget {
 
    public StyledButton(int x, int y, int width, int height, Text message, PressAction onPress, int accentColor) {
       super(x, y, width, height, message, onPress, DEFAULT_NARRATION_SUPPLIER);
+      this.accentColor = accentColor;
+   }
+
+   public void setAccentColor(int accentColor) {
       this.accentColor = accentColor;
    }
 

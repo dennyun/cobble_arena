@@ -12,6 +12,7 @@ public record RankedLadderSnapshot(
    int rankedWins,
    int rankedLosses,
    int rankedStreak,
+   int rankedBestStreak,
    int playerRank,
    int totalRankedPlayers,
    List<String> leaderboardEntries
@@ -23,6 +24,7 @@ public record RankedLadderSnapshot(
          buffer.writeInt(snapshot.rankedWins());
          buffer.writeInt(snapshot.rankedLosses());
          buffer.writeInt(snapshot.rankedStreak());
+         buffer.writeInt(snapshot.rankedBestStreak());
          buffer.writeInt(snapshot.playerRank());
          buffer.writeInt(snapshot.totalRankedPlayers());
          buffer.writeInt(snapshot.leaderboardEntries().size());
@@ -39,12 +41,13 @@ public record RankedLadderSnapshot(
          buffer.readInt(),
          buffer.readInt(),
          buffer.readInt(),
+         buffer.readInt(),
          decodeEntries(buffer)
       )
    );
 
    public static RankedLadderSnapshot empty(String ladderId) {
-      return new RankedLadderSnapshot(ladderId, 1000, 0, 0, 0, 0, 0, List.of());
+      return new RankedLadderSnapshot(ladderId, 0, 0, 0, 0, 0, 0, 0, List.of());
    }
 
    private static List<String> decodeEntries(ByteBuf buffer) {

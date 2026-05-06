@@ -45,7 +45,7 @@ public final class ArenaServerConfig {
    }
 
    public synchronized void initialize(MinecraftServer server) {
-      Path configDir = Path.of("config");
+      Path configDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("cobblemon_arena");
 
       try {
          Files.createDirectories(configDir);
@@ -53,8 +53,8 @@ public final class ArenaServerConfig {
          CobblemonArena.LOGGER.error("Falha ao criar diretorio de configuracao da arena {}", configDir, var5);
       }
 
-      this.configFile = configDir.resolve("cobblemon_arena_server.json");
-      this.customLadderTemplateDir = configDir.resolve("cobblemon_arena_custom_ladders");
+      this.configFile = configDir.resolve("server_config.json");
+      this.customLadderTemplateDir = configDir.resolve("custom_ladders");
 
       try {
          Files.createDirectories(this.customLadderTemplateDir);
@@ -183,7 +183,7 @@ public final class ArenaServerConfig {
                this.rankedLadders = fallback.rankedLadders;
                this.currentSeasonNumber = 1;
                this.currentSeasonId = "season_1";
-               this.currentSeasonName = "Season 1";
+               this.currentSeasonName = "Season Teste";
                this.currentSeasonStartedAtMs = System.currentTimeMillis();
                this.completedRankedSeasons = new ArrayList<>();
                this.rewards = createDefaultRewards();
@@ -398,7 +398,14 @@ public final class ArenaServerConfig {
       List<ArenaServerConfig.RankedLadderConfig> normalized = new ArrayList<>();
 
       for (int i = 0; i < 8; i++) {
-         ArenaServerConfig.RankedLadderConfig source = ladders != null && i < ladders.size() ? ladders.get(i) : defaults.get(i);
+         ArenaServerConfig.RankedLadderConfig source;
+         if (ladders != null && i < ladders.size()) {
+             source = ladders.get(i);
+         } else if (i < defaults.size()) {
+             source = defaults.get(i);
+         } else {
+             source = defaultLadder("Singles", "50", i + 1);
+         }
          normalized.add(normalizeSingleLadder(source, i + 1));
       }
 
@@ -458,13 +465,9 @@ public final class ArenaServerConfig {
 
    private static List<ArenaServerConfig.RankedLadderConfig> createDefaultRankedLadders() {
       List<ArenaServerConfig.RankedLadderConfig> defaults = new ArrayList<>();
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.OVER_USED));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.UBERS));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.UNDER_USED));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.RARELY_USED));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.NEVER_USED));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.PU));
-      defaults.add(defaultPresetLadder(ArenaRankedPreset.LITTLE_CUP));
+      defaults.add(defaultPresetLadder(ArenaRankedPreset.SOLO));
+      defaults.add(defaultPresetLadder(ArenaRankedPreset.DUPLAS));
+      defaults.add(defaultPresetLadder(ArenaRankedPreset.TRIPLAS));
       defaults.add(defaultPresetLadder(ArenaRankedPreset.MONOTYPE));
       return defaults;
    }
@@ -554,7 +557,9 @@ public final class ArenaServerConfig {
    }
 
    private static String normalizeSeasonName(String seasonName, int seasonNumber) {
-      return seasonName != null && !seasonName.isBlank() ? seasonName.trim() : "Season " + normalizeSeasonNumber(seasonNumber);
+      if (seasonName != null && !seasonName.isBlank()) return seasonName.trim();
+      int normalized = normalizeSeasonNumber(seasonNumber);
+      return normalized == 1 ? "Season Teste" : "Season " + normalized;
    }
 
    private static long normalizeSeasonStartedAtMs(long startedAtMs) {
@@ -629,6 +634,14 @@ public final class ArenaServerConfig {
    }
 
    private static boolean shouldMigrateLegacyRankedLadders(ArenaServerConfig.StoredConfig loaded) {
+      if (loaded != null && loaded.rankedLadders != null) {
+         for (ArenaServerConfig.RankedLadderConfig l : loaded.rankedLadders) {
+            if (l.name != null && (l.name.equals("OU") || l.name.equals("Ubers") || l.name.equals("UU") || l.name.equals("RU"))) {
+               return true;
+            }
+         }
+      }
+
       if (loaded != null && loaded.rankedLadders != null && loaded.rankedLadders.size() == 1 && loaded.activeRankedLadderCount <= 1) {
          ArenaServerConfig.RankedLadderConfig ladder = normalizeSingleLadder(loaded.rankedLadders.get(0), 1);
          if (!ArenaRankedPreset.CUSTOM.getKey().equals(ladder.presetKey)) {
@@ -1192,7 +1205,7 @@ public final class ArenaServerConfig {
       private List<ArenaServerConfig.RankedLadderConfig> rankedLadders = ArenaServerConfig.createDefaultRankedLadders();
       private int currentSeasonNumber = 1;
       private String currentSeasonId = "season_1";
-      private String currentSeasonName = "Season 1";
+      private String currentSeasonName = "Season Teste";
       private long currentSeasonStartedAtMs = System.currentTimeMillis();
       private List<ArenaServerConfig.ArchivedSeasonInfo> completedRankedSeasons = new ArrayList<>();
       private ArenaServerConfig.RewardsConfig rewards = ArenaServerConfig.createDefaultRewards();

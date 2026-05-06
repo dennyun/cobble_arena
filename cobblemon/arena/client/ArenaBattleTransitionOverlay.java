@@ -1,11 +1,18 @@
 package cobblemon.arena.client;
 
 import cobblemon.arena.network.ArenaTransitionPokemonEntryPayload;
+import com.cobblemon.mod.common.client.gui.PokemonGuiUtilsKt;
+import com.cobblemon.mod.common.client.render.models.blockbench.FloatingState;
+import com.cobblemon.mod.common.entity.PoseType;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.util.Identifier;
+import org.joml.Quaternionf;
 
 /**
  * Fullscreen overlay shown during the arena lead-selection transition.
@@ -19,10 +26,10 @@ public final class ArenaBattleTransitionOverlay {
         new ArenaBattleTransitionOverlay();
 
     // ── Layout constants ─────────────────────────────────────────────────────────
-    /** Size of each Pokémon slot box in pixels. */
-    private static final int SLOT_SIZE = 36;
+    /** Size of each Pokémon slot box in pixels (matches ArenaPartyPreviewRenderer). */
+    private static final int SLOT_SIZE = 52;
     /** Gap between slot boxes. */
-    private static final int SLOT_GAP = 6;
+    private static final int SLOT_GAP = 5;
     /** Number of slot columns per player side. */
     private static final int SLOT_COLS = 3;
 
@@ -37,26 +44,30 @@ public final class ArenaBattleTransitionOverlay {
     private static final int BORDER_COLOR = color(132, 54, 62, 255);
     private static final int BORDER_HIGHLIGHT = color(164, 68, 74, 255);
 
-    /** Cycled per slot index for visual variety. */
-    private static final int[] SLOT_COLORS = {
-        color(112, 184, 248, 200),
-        color(112, 220, 132, 200),
-        color(235, 173, 76, 200),
-        color(235, 204, 106, 200),
-        color(255, 118, 62, 200),
-        color(192, 134, 92, 200),
-    };
-
     // ── State ────────────────────────────────────────────────────────────────────
     private boolean active = false;
     private String leftName = "";
     private String rightName = "";
     private UUID leftPlayerUuid;
     private UUID rightPlayerUuid;
+    private int leftElo = 0;
+    private int rightElo = 0;
     private List<ArenaTransitionPokemonEntryPayload> leftTeam = List.of();
     private List<ArenaTransitionPokemonEntryPayload> rightTeam = List.of();
     private int durationTicks = 120;
     private int remainingTicks;
+    /** Number of leads to select: 1 = singles, 2 = doubles, 3 = triples. */
+    private int leadsRequired = 1;
+    /** Slots selected by the local player (index into leftTeam). */
+    private final java.util.List<Integer> selectedOwnSlots =
+        new java.util.ArrayList<>();
+
+    // One FloatingState per slot per team so Cobblemon’s model animator has
+    // per-slot state (pose, animation tick, etc.).
+    private final Map<Integer, FloatingState> leftStates = new HashMap<>();
+    private final Map<Integer, FloatingState> rightStates = new HashMap<>();
+    // Partial-tick value forwarded from the last render() call, used in drawSlot.
+    private float lastPartialTick = 0f;
 
     private ArenaBattleTransitionOverlay() {}
 
@@ -75,15 +86,59 @@ public final class ArenaBattleTransitionOverlay {
         List<ArenaTransitionPokemonEntryPayload> rightTeam,
         int durationTicks
     ) {
+        start(
+            leftName,
+            leftPlayerUuid,
+            rightName,
+            rightPlayerUuid,
+            leftTeam,
+            rightTeam,
+            durationTicks,
+            "singles",
+            0,
+            0
+        );
+    }
+
+    public void start(
+        String leftName,
+        String leftPlayerUuid,
+        String rightName,
+        String rightPlayerUuid,
+        List<ArenaTransitionPokemonEntryPayload> leftTeam,
+        List<ArenaTransitionPokemonEntryPayload> rightTeam,
+        int durationTicks,
+        String battleTypeId,
+        int leftElo,
+        int rightElo
+    ) {
         this.leftName = leftName != null ? leftName : "";
         this.rightName = rightName != null ? rightName : "";
         this.leftPlayerUuid = parseUuid(leftPlayerUuid);
         this.rightPlayerUuid = parseUuid(rightPlayerUuid);
+        this.leftElo = leftElo;
+        this.rightElo = rightElo;
         this.leftTeam = leftTeam != null ? List.copyOf(leftTeam) : List.of();
         this.rightTeam = rightTeam != null ? List.copyOf(rightTeam) : List.of();
         this.durationTicks = Math.max(1, durationTicks);
         this.remainingTicks = this.durationTicks;
         this.active = true;
+        this.selectedOwnSlots.clear();
+        this.leadsRequired = switch (
+            battleTypeId != null
+                ? battleTypeId.toLowerCase(java.util.Locale.ROOT)
+                : ""
+        ) {
+            case "doubles" -> 2;
+            case "triples" -> 3;
+            default -> 1;
+        };
+        leftStates.clear();
+        rightStates.clear();
+        for (int i = 0; i < 6; i++) {
+            leftStates.put(i, new FloatingState());
+            rightStates.put(i, new FloatingState());
+        }
     }
 
     public void tick() {
@@ -109,6 +164,53 @@ public final class ArenaBattleTransitionOverlay {
     }
 
     // ── Hit-detection ────────────────────────────────────────────────────────────
+
+    public int getLeadsRequired() {
+        return leadsRequired;
+    }
+
+    public java.util.List<Integer> getSelectedOwnSlots() {
+        return java.util.Collections.unmodifiableList(selectedOwnSlots);
+    }
+
+    public boolean hasAllLeadsSelected() {
+        return selectedOwnSlots.size() >= leadsRequired;
+    }
+
+    public int getSelectedOwnCount() {
+        return selectedOwnSlots.size();
+    }
+
+    /**
+     * Retorna a posição Y do botão "Confirmar Leads" baseada na altura da tela.
+     * Garante que o botão fique acima do countdown sem sobreposição.
+     */
+    public static int getConfirmButtonY(int sh) {
+        // countdown está em sh*0.86; botão fica 4px acima do countdown
+        int countdownY = (int) (sh * 0.86);
+        return countdownY - 28; // 20px botão + 4px gap + 4px margem
+    }
+
+    /**
+     * Toggles slot selection.  If the slot is already selected it is deselected;
+     * otherwise it is added (up to {@link #leadsRequired} slots max).
+     * Returns {@code true} if the selection changed.
+     */
+    public boolean toggleOwnSlot(int slotIndex) {
+        if (!hasOwnPokemonAt(slotIndex)) return false;
+        if (selectedOwnSlots.contains(slotIndex)) {
+            selectedOwnSlots.remove((Integer) slotIndex);
+            return true;
+        }
+        if (selectedOwnSlots.size() < leadsRequired) {
+            selectedOwnSlots.add(slotIndex);
+            return true;
+        }
+        // Replace the oldest selection when at capacity (singles = just replace)
+        selectedOwnSlots.remove(0);
+        selectedOwnSlots.add(slotIndex);
+        return true;
+    }
 
     /**
      * Returns true when the left team has a non-null entry at {@code slotIndex}.
@@ -156,35 +258,62 @@ public final class ArenaBattleTransitionOverlay {
      * Full render pass. Called every frame from
      * {@link ArenaBattleLeadPreviewScreen#render}.
      */
+    /** Hit-test the opponent (right) side slots. Returns -1 if none. */
+    public int getOpponentSlotAt(double mx, double my, int sw, int sh) {
+        int rightSectionX = (int) (sw * 0.54);
+        int sectionY = (int) (sh * 0.22);
+        int totalW = SLOT_COLS * SLOT_SIZE + (SLOT_COLS - 1) * SLOT_GAP;
+        int slotStartX = rightSectionX + (int) (sw * 0.44) - totalW - 4;
+        int slotStartY = sectionY + 22;
+        int count = Math.min(rightTeam.size(), 6);
+        for (int i = 0; i < count; i++) {
+            int sx = slotStartX + (i % SLOT_COLS) * (SLOT_SIZE + SLOT_GAP);
+            int sy = slotStartY + (i / SLOT_COLS) * (SLOT_SIZE + SLOT_GAP);
+            if (
+                mx >= sx &&
+                mx < sx + SLOT_SIZE &&
+                my >= sy &&
+                my < sy + SLOT_SIZE
+            ) return i;
+        }
+        return -1;
+    }
+
+    /** Returns the opponent's entry at slotIndex (from rightTeam), or null. */
+    public ArenaTransitionPokemonEntryPayload getOpponentEntry(int slotIndex) {
+        if (slotIndex < 0 || slotIndex >= rightTeam.size()) return null;
+        return rightTeam.get(slotIndex);
+    }
+
     public void render(
         DrawContext gfx,
         int sw,
         int sh,
         float partialTick,
-        int selectedOwnSlot,
-        int hoveredOwnSlot
+        java.util.List<Integer> selectedOwnSlots,
+        int hoveredOwnSlot,
+        int hoveredOpponentSlot
     ) {
         if (!active) return;
-
+        this.lastPartialTick = partialTick;
         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
 
-        // 1 ── Fullscreen dark background ──────────────────────────────────────
+        // 1 ── Fullscreen dark background
         gfx.fill(0, 0, sw, sh, color(0, 0, 0, 210));
-        // Subtle warm tint on the top third
         gfx.fill(0, 0, sw, sh / 3, color(44, 15, 20, 70));
 
-        // 2 ── Banner: "BATALHA NA ARENA" ──────────────────────────────────────
+        // 2 ── Banner
         drawBanner(gfx, tr, sw, sh);
-
-        // 3 ── Center decorative divider + "VS" ────────────────────────────────
+        // 3 ── VS divider
         drawVsDivider(gfx, tr, sw, sh);
 
-        // 4 ── Left (own) player section ───────────────────────────────────────
         int sectionW = (int) (sw * 0.44);
         int sectionY = (int) (sh * 0.22);
         int leftSectionX = (int) (sw * 0.02);
+        int rightSectionX = (int) (sw * 0.54);
 
-        drawPlayerSection(
+        // 4 ── Own (left) player section
+        drawPlayerSectionMulti(
             gfx,
             tr,
             leftName,
@@ -192,14 +321,14 @@ public final class ArenaBattleTransitionOverlay {
             leftSectionX,
             sectionY,
             sectionW,
-            selectedOwnSlot,
+            selectedOwnSlots,
             hoveredOwnSlot,
-            /* isOwn = */ true
+            true,
+            leftElo
         );
 
-        // 5 ── Right (opponent) player section ─────────────────────────────────
-        int rightSectionX = (int) (sw * 0.54);
-        drawPlayerSection(
+        // 5 ── Opponent (right) player section
+        drawPlayerSectionMulti(
             gfx,
             tr,
             rightName,
@@ -207,19 +336,41 @@ public final class ArenaBattleTransitionOverlay {
             rightSectionX,
             sectionY,
             sectionW,
-            -1,
-            -1,
-            /* isOwn = */ false
+            java.util.List.of(),
+            hoveredOpponentSlot,
+            false,
+            rightElo
         );
 
-        // 6 ── Instruction line ─────────────────────────────────────────────────
+        // 6 ── Selection instruction
         drawInstruction(gfx, tr, sw, sh);
 
-        // 7 ── Countdown label ──────────────────────────────────────────────────
+        // 7 ── Countdown
         drawCountdown(gfx, tr, sw, sh);
 
-        // 8 ── Progress bar ─────────────────────────────────────────────────────
+        // 8 ── Progress bar
         drawProgressBar(gfx, sw, sh);
+
+        // 9 ── Hover tooltip — own or opponent Pokemon
+        // Shown for BOTH sides so each player can check any Pokemon's info.
+        ArenaTransitionPokemonEntryPayload tooltipEntry = null;
+        if (hoveredOpponentSlot >= 0) {
+            tooltipEntry = getOpponentEntry(hoveredOpponentSlot);
+        } else if (hoveredOwnSlot >= 0) {
+            tooltipEntry =
+                hoveredOwnSlot < leftTeam.size()
+                    ? leftTeam.get(hoveredOwnSlot)
+                    : null;
+        }
+        if (tooltipEntry != null) {
+            drawOpponentTooltip(
+                gfx,
+                tr,
+                (int) (sw * 0.5),
+                (int) (sh * 0.72),
+                tooltipEntry
+            );
+        }
     }
 
     // ── Private draw helpers ─────────────────────────────────────────────────────
@@ -322,6 +473,161 @@ public final class ArenaBattleTransitionOverlay {
     }
 
     /**
+     * Draws one player's section — multi-lead version (replaces old single-int).
+     */
+    private void drawPlayerSectionMulti(
+        DrawContext gfx,
+        TextRenderer tr,
+        String playerName,
+        List<ArenaTransitionPokemonEntryPayload> team,
+        int x,
+        int y,
+        int width,
+        java.util.List<Integer> selectedSlots,
+        int hoveredSlot,
+        boolean isOwn,
+        int elo
+    ) {
+        drawPlayerSection(
+            gfx,
+            tr,
+            playerName,
+            team,
+            x,
+            y,
+            width,
+            selectedSlots,
+            hoveredSlot,
+            isOwn,
+            elo
+        );
+    }
+
+    /**
+     * Draws a full info tooltip for a Pokémon (own or opponent).
+     * Shows name, level, types, ability, held item, nature and moves.
+     */
+    private void drawOpponentTooltip(
+        DrawContext gfx,
+        TextRenderer tr,
+        int cx,
+        int cy,
+        ArenaTransitionPokemonEntryPayload entry
+    ) {
+        String name = entry.speciesName() != null ? entry.speciesName() : "???";
+        int lv = entry.level();
+        String types = entry.typeNames().isEmpty()
+            ? ""
+            : String.join(" / ", entry.typeNames());
+        String ability = entry.abilityName().isBlank()
+            ? ""
+            : "Hab: " + entry.abilityName();
+        String nature = entry.natureName().isBlank()
+            ? ""
+            : "Nat: " + entry.natureName();
+        // Resolve o item usando helper que suporta formatos antigos e novos
+        String heldItemId = entry.heldItemName();
+        net.minecraft.item.ItemStack itemStack =
+            net.minecraft.item.ItemStack.EMPTY;
+        String itemDisplayName = "";
+        if (heldItemId != null && !heldItemId.isBlank()) {
+            try {
+                net.minecraft.util.Identifier itemId = resolveItemIdentifier(
+                    heldItemId
+                );
+                if (itemId != null) {
+                    net.minecraft.item.Item it =
+                        net.minecraft.registry.Registries.ITEM.get(itemId);
+                    if (it != null && it != net.minecraft.item.Items.AIR) {
+                        itemStack = new net.minecraft.item.ItemStack(it);
+                        // Limpa o nome caso venha como chave de tradução
+                        String rawName = itemStack.getName().getString();
+                        itemDisplayName = cleanItemDisplayName(rawName);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        lines.add(name + "  Nv." + lv);
+        if (!types.isBlank()) lines.add(types);
+        if (!ability.isBlank()) lines.add(ability);
+        if (!nature.isBlank()) lines.add(nature);
+        if (!entry.moveNames().isEmpty()) {
+            lines.add("Golpes:");
+            entry.moveNames().forEach(m -> lines.add("  " + m));
+        }
+
+        int lineH = 10;
+        int padX = 8;
+        int padY = 6;
+        // Se há item, adicionamos 20px extras no topo para o ícone 16x16
+        boolean hasItem = !itemStack.isEmpty();
+        int itemSectionH = hasItem ? 20 : 0;
+        int boxW = 0;
+        for (String l : lines) boxW = Math.max(boxW, tr.getWidth(l) + padX * 2);
+        if (hasItem) boxW = Math.max(
+            boxW,
+            16 + 4 + tr.getWidth(itemDisplayName) + padX * 2
+        );
+        boxW = Math.max(boxW, 160);
+        int boxH = padY * 2 + itemSectionH + lines.size() * lineH;
+
+        // Position: prefer centred on cx, clamp to screen
+        int bx = cx - boxW / 2;
+        if (bx < 4) bx = 4;
+        int by = cy - boxH - 8;
+        if (by < 4) by = cy + 8;
+
+        gfx.getMatrices().push();
+        gfx.getMatrices().translate(0, 0, 1000);
+
+        // Background
+        gfx.fill(bx, by, bx + boxW, by + boxH, color(10, 6, 18, 240));
+        gfx.fill(bx, by, bx + boxW, by + 1, BORDER_HIGHLIGHT);
+        gfx.fill(bx, by, bx + 1, by + boxH, BORDER_HIGHLIGHT);
+        gfx.fill(bx + boxW - 1, by, bx + boxW, by + boxH, BORDER_COLOR);
+        gfx.fill(bx, by + boxH - 1, bx + boxW, by + boxH, BORDER_COLOR);
+        // Header accent
+        gfx.fill(
+            bx + 1,
+            by + 1,
+            bx + boxW - 1,
+            by + lineH + padY,
+            color(40, 12, 24, 180)
+        );
+
+        int ty = by + padY;
+
+        // Se há item, exibe o ícone 16x16 + nome do item antes das outras linhas
+        if (hasItem) {
+            gfx.drawItem(itemStack, bx + padX, ty);
+            gfx.drawText(
+                tr,
+                itemDisplayName,
+                bx + padX + 18,
+                ty + 4,
+                TEXT_PRIMARY,
+                false
+            );
+            ty += itemSectionH;
+        }
+
+        // Text rows
+        for (int i = 0; i < lines.size(); i++) {
+            int col = (i == 0)
+                ? RANKED_ACCENT
+                : lines.get(i).startsWith("Golpes")
+                    ? WARNING_ACCENT
+                    : TEXT_PRIMARY;
+            gfx.drawText(tr, lines.get(i), bx + padX, ty, col, false);
+            ty += lineH;
+        }
+
+        gfx.getMatrices().pop();
+    }
+
+    /**
      * Draws one player's name header and up to 6 Pokémon slots.
      *
      * @param isOwn  {@code true} = left side (interactive), {@code false} = right side.
@@ -334,14 +640,17 @@ public final class ArenaBattleTransitionOverlay {
         int x,
         int y,
         int width,
-        int selectedSlot,
+        java.util.List<Integer> selectedSlots,
         int hoveredSlot,
-        boolean isOwn
+        boolean isOwn,
+        int elo
     ) {
         // ── Name header ──────────────────────────────────────────────────────
         int nameAccent = isOwn ? QUICK_ACCENT : SUCCESS_ACCENT;
+        int r = 5;
+        int eloW = elo > 0 ? tr.getWidth(elo + "") + r * 2 + 6 : 0;
         int nameW = tr.getWidth(playerName);
-        int nameX = isOwn ? x + 4 : x + width - nameW - 4;
+        int nameX = isOwn ? x + 4 + eloW : x + width - nameW - 4 - eloW;
 
         // Background band
         gfx.fill(x, y - 2, x + width, y + 14, color(20, 8, 12, 180));
@@ -352,19 +661,32 @@ public final class ArenaBattleTransitionOverlay {
         // Role label
         String roleLabel = isOwn ? "(Voce)" : "(Oponente)";
         int roleLabelColor = TEXT_DIM;
+        int roleLabelX;
         if (isOwn) {
-            gfx.drawText(
-                tr,
-                roleLabel,
-                nameX + nameW + 4,
-                y,
-                roleLabelColor,
-                false
-            );
+            roleLabelX = nameX + nameW + 4;
+            gfx.drawText(tr, roleLabel, roleLabelX, y, roleLabelColor, false);
         } else {
-            int roleLabelX = nameX - tr.getWidth(roleLabel) - 4;
+            roleLabelX = nameX - tr.getWidth(roleLabel) - 4;
             if (roleLabelX < x) roleLabelX = x + 2;
             gfx.drawText(tr, roleLabel, roleLabelX, y, roleLabelColor, false);
+        }
+
+        // Elo label & icon
+        if (elo > 0) {
+            String eloStr = elo + "";
+            int eloCol = TEXT_DIM;
+            String tierLbl = getRankTierName(elo);
+            if (isOwn) {
+                int iconCx = nameX - eloW + r;
+                int iconCy = y + 4;
+                ArenaRankBadgeRenderer.drawCircularBadge(gfx, iconCx, iconCy, r, tierLbl);
+                gfx.drawText(tr, eloStr, iconCx + r + 4, y, eloCol, false);
+            } else {
+                int iconCx = nameX + nameW + tr.getWidth(eloStr) + 8 + r;
+                int iconCy = y + 4;
+                ArenaRankBadgeRenderer.drawCircularBadge(gfx, iconCx, iconCy, r, tierLbl);
+                gfx.drawText(tr, eloStr, nameX + nameW + 4, y, eloCol, false);
+            }
         }
 
         // ── Pokémon slots ────────────────────────────────────────────────────
@@ -380,24 +702,13 @@ public final class ArenaBattleTransitionOverlay {
             int sx = slotStartX + col * (SLOT_SIZE + SLOT_GAP);
             int sy = slotStartY + row * (SLOT_SIZE + SLOT_GAP);
 
-            boolean selected = isOwn && i == selectedSlot;
+            boolean selected = isOwn && selectedSlots.contains(i);
             boolean hovered = isOwn && i == hoveredSlot;
 
             drawSlot(gfx, tr, sx, sy, i, entry, selected, hovered, isOwn);
         }
 
-        // ── Status line below slots ──────────────────────────────────────────
-        if (isOwn) {
-            int rows =
-                slotCount > 0 ? (slotCount + SLOT_COLS - 1) / SLOT_COLS : 0;
-            int statusY = slotStartY + rows * (SLOT_SIZE + SLOT_GAP) + 2;
-            String status =
-                selectedSlot >= 0
-                    ? "Lead selecionado! Aguardando inicio..."
-                    : "Clique em um Pokemon para selecionar o lead";
-            int statusColor = selectedSlot >= 0 ? SUCCESS_ACCENT : TEXT_DIM;
-            gfx.drawText(tr, status, slotStartX, statusY, statusColor, false);
-        }
+        // ── Status line below slots removed ──────────────────────────────────────────
     }
 
     /**
@@ -414,79 +725,207 @@ public final class ArenaBattleTransitionOverlay {
         boolean hovered,
         boolean isOwn
     ) {
-        int fillColor = SLOT_COLORS[index % SLOT_COLORS.length];
+        // ── Estilo vermelho unificado (igual ao ArenaPartyPreviewRenderer) ────────
+        int slotBg = (selected || hovered)
+            ? color(88, 44, 50, 240)
+            : color(44, 18, 24, 220);
+        int borderHiCol = selected
+            ? SUCCESS_ACCENT
+            : (hovered && isOwn ? RANKED_ACCENT : BORDER_HIGHLIGHT);
 
-        // Outer dark border
+        // Fundo exterior escuro
         gfx.fill(sx, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, color(10, 4, 6, 220));
-        // Colored fill (inset 1 px)
+        // Fundo do slot
         gfx.fill(
             sx + 1,
             sy + 1,
             sx + SLOT_SIZE - 1,
             sy + SLOT_SIZE - 1,
-            fillColor
+            slotBg
+        );
+        // Sombra inferior
+        gfx.fill(
+            sx + 1,
+            sy + SLOT_SIZE - 4,
+            sx + SLOT_SIZE - 1,
+            sy + SLOT_SIZE - 1,
+            color(0, 0, 0, 60)
+        );
+        // Bordas highlight (topo e esquerda)
+        gfx.fill(sx + 1, sy, sx + SLOT_SIZE - 1, sy + 1, borderHiCol);
+        gfx.fill(sx, sy + 1, sx + 1, sy + SLOT_SIZE - 1, borderHiCol);
+        // Bordas sombra (base e direita)
+        gfx.fill(
+            sx + 1,
+            sy + SLOT_SIZE - 1,
+            sx + SLOT_SIZE - 1,
+            sy + SLOT_SIZE,
+            color(80, 30, 36, 255)
+        );
+        gfx.fill(
+            sx + SLOT_SIZE - 1,
+            sy + 1,
+            sx + SLOT_SIZE,
+            sy + SLOT_SIZE - 1,
+            color(80, 30, 36, 255)
+        );
+        // Brilho interno superior
+        gfx.fill(
+            sx + 2,
+            sy + 1,
+            sx + SLOT_SIZE - 2,
+            sy + 2,
+            color(255, 255, 255, 14)
         );
 
-        // ── State border ──────────────────────────────────────────────────────
         if (selected) {
-            // Bright green border — 2 px thick on all sides
             drawBorder(gfx, sx, sy, SLOT_SIZE, SLOT_SIZE, 2, SUCCESS_ACCENT);
-            // Checkmark in top-right corner
-            gfx.drawText(
-                tr,
-                "v",
-                sx + SLOT_SIZE - 10,
-                sy + 2,
-                SUCCESS_ACCENT,
-                true
-            );
-        } else if (hovered) {
-            // Gold hover border
-            drawBorder(gfx, sx, sy, SLOT_SIZE, SLOT_SIZE, 2, RANKED_ACCENT);
-            // Dim highlight overlay
             gfx.fill(
                 sx + 1,
                 sy + 1,
                 sx + SLOT_SIZE - 1,
                 sy + SLOT_SIZE - 1,
-                color(255, 255, 255, 20)
+                color(112, 220, 132, 18)
             );
-        } else if (isOwn) {
-            // Subtle clickable border
-            drawBorder(
-                gfx,
-                sx,
-                sy,
-                SLOT_SIZE,
-                SLOT_SIZE,
-                1,
-                color(200, 160, 140, 140)
+            gfx.drawText(
+                tr,
+                "✓",
+                sx + SLOT_SIZE - 10,
+                sy + 2,
+                SUCCESS_ACCENT,
+                true
+            );
+        } else if (hovered && isOwn) {
+            drawBorder(gfx, sx, sy, SLOT_SIZE, SLOT_SIZE, 2, RANKED_ACCENT);
+            gfx.fill(
+                sx + 1,
+                sy + 1,
+                sx + SLOT_SIZE - 1,
+                sy + SLOT_SIZE - 1,
+                color(255, 255, 255, 18)
             );
         }
 
-        // ── Species abbreviation text ─────────────────────────────────────────
+        // ── Pokemon model (Cobblemon 3D) or fallback text ─────────────────────
         if (entry != null) {
-            String name = entry.speciesName();
-            if (name == null || name.isBlank()) name = "???";
+            String speciesKey = entry.speciesKey();
+            String speciesName = entry.speciesName();
+            if (speciesName == null || speciesName.isBlank()) speciesName =
+                "???";
 
-            // Truncate to 5 chars and draw centred at 80 % scale
-            String abbr = name.length() > 5 ? name.substring(0, 5) : name;
-            float scale = 0.8f;
-            int abbrW = (int) (tr.getWidth(abbr) * scale);
-            int abbrH = (int) (8 * scale);
-            int tx = sx + (SLOT_SIZE - abbrW) / 2;
-            int ty = sy + (SLOT_SIZE - abbrH) / 2;
+            boolean rendered = false;
+            if (speciesKey != null && !speciesKey.isBlank()) {
+                try {
+                    Identifier speciesId = Identifier.of(speciesKey);
+                    Map<Integer, FloatingState> states = isOwn
+                        ? leftStates
+                        : rightStates;
+                    FloatingState state = states.computeIfAbsent(index, k ->
+                        new FloatingState()
+                    );
+                    Quaternionf rot = new Quaternionf().rotationXYZ(
+                        (float) Math.toRadians(10),
+                        (float) Math.toRadians(25),
+                        0f
+                    );
+                    gfx.getMatrices().push();
+                    // Centre the model in the slot:
+                    // ArenaPartyPreviewRenderer uses sy-1 for a 32-px slot.
+                    // Our slot is 52 px; the model occupies ~32 px vertically
+                    // at scale 2.6, so offset by (52-32)/2 = 10 px to centre.
+                    gfx
+                        .getMatrices()
+                        .translate(sx + SLOT_SIZE / 2f, sy + 10f, 0f);
+                    gfx.getMatrices().scale(2.6f, 2.6f, 1f);
+                    PokemonGuiUtilsKt.drawProfilePokemon(
+                        speciesId,
+                        gfx.getMatrices(),
+                        rot,
+                        PoseType.PROFILE,
+                        state,
+                        lastPartialTick,
+                        4.5f,
+                        true,
+                        false,
+                        false,
+                        1f,
+                        1f,
+                        1f,
+                        1f,
+                        0f,
+                        0f
+                    );
+                    gfx.getMatrices().pop();
+                    rendered = true;
+                } catch (Exception ignored) {
+                    // Model not ready yet — fall through to text fallback
+                }
+            }
+            if (!rendered) {
+                // Text fallback: species name centred in the slot
+                String abbr =
+                    speciesName.length() > 5
+                        ? speciesName.substring(0, 5)
+                        : speciesName;
+                float scale = 0.78f;
+                int abbrW = (int) (tr.getWidth(abbr) * scale);
+                gfx.getMatrices().push();
+                gfx
+                    .getMatrices()
+                    .translate(
+                        sx + (SLOT_SIZE - abbrW) / 2,
+                        sy + SLOT_SIZE / 2 - 4,
+                        0.0
+                    );
+                gfx.getMatrices().scale(scale, scale, 1.0f);
+                gfx.drawText(tr, abbr, 0, 0, TEXT_PRIMARY, true);
+                gfx.getMatrices().pop();
+            }
 
-            gfx.getMatrices().push();
-            gfx.getMatrices().translate(tx, ty, 0.0);
-            gfx.getMatrices().scale(scale, scale, 1.0f);
-            gfx.drawText(tr, abbr, 0, 0, TEXT_PRIMARY, true);
-            gfx.getMatrices().pop();
+            // Nível no canto inferior esquerdo
+            if (entry.level() > 0) {
+                String lvLabel = "Nv " + entry.level();
+                float lvScale = 0.58f;
+                gfx.getMatrices().push();
+                gfx.getMatrices().translate(sx + 3, sy + SLOT_SIZE - 9, 0f);
+                gfx.getMatrices().scale(lvScale, lvScale, 1f);
+                gfx.drawText(tr, lvLabel, 0, 0, TEXT_DIM, false);
+                gfx.getMatrices().pop();
+            }
+
+            // Ícone do item held no canto inferior direito — renderizado por último (fica na frente)
+            String heldItemId = entry.heldItemName();
+            if (heldItemId != null && !heldItemId.isBlank()) {
+                try {
+                    net.minecraft.util.Identifier itemIdentifier =
+                        resolveItemIdentifier(heldItemId);
+                    if (itemIdentifier != null) {
+                        net.minecraft.item.Item it =
+                            net.minecraft.registry.Registries.ITEM.get(
+                                itemIdentifier
+                            );
+                        if (it != null && it != net.minecraft.item.Items.AIR) {
+                            net.minecraft.item.ItemStack stack =
+                                new net.minecraft.item.ItemStack(it);
+                            int iconX = sx + SLOT_SIZE - 13;
+                            int iconY = sy + SLOT_SIZE - 13;
+
+                            gfx.getMatrices().push();
+                            gfx
+                                .getMatrices()
+                                .translate(iconX - 2, iconY - 2, 300.0); // z=300 garante que fica na frente
+                            gfx.getMatrices().scale(0.875f, 0.875f, 0.875f);
+                            gfx.drawItem(stack, 0, 0);
+                            gfx.getMatrices().pop();
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
         } else {
-            // Empty slot — show dash
-            int dashX = sx + SLOT_SIZE / 2 - tr.getWidth("-") / 2;
+            // Empty slot — show circle placeholder
+            int dashX = sx + SLOT_SIZE / 2 - tr.getWidth("○") / 2;
             int dashY = sy + SLOT_SIZE / 2 - 4;
-            gfx.drawText(tr, "-", dashX, dashY, color(80, 60, 60, 180), false);
+            gfx.drawText(tr, "○", dashX, dashY, color(80, 60, 60, 180), false);
         }
     }
 
@@ -528,10 +967,7 @@ public final class ArenaBattleTransitionOverlay {
         int sw,
         int sh
     ) {
-        String msg = "Clique em um Pokemon para seleciona-lo como inicial";
-        int msgW = tr.getWidth(msg);
-        int msgY = (int) (sh * 0.83);
-        gfx.drawText(tr, msg, sw / 2 - msgW / 2, msgY, TEXT_DIM, false);
+        // Empty as requested
     }
 
     private void drawCountdown(
@@ -550,7 +986,7 @@ public final class ArenaBattleTransitionOverlay {
                     : QUICK_ACCENT;
         String label = "Tempo para selecionar: " + timeStr;
         int labelW = tr.getWidth(label);
-        int labelY = (int) (sh * 0.88);
+        int labelY = (int) (sh * 0.86);
 
         // Backdrop pill
         gfx.fill(
@@ -569,7 +1005,7 @@ public final class ArenaBattleTransitionOverlay {
             durationTicks > 0 ? (float) remainingTicks / durationTicks : 0.0f;
         int barW = (int) (sw * 0.60);
         int barX = (sw - barW) / 2;
-        int barY = (int) (sh * 0.92);
+        int barY = (int) (sh * 0.91);
         int barH = 6;
 
         // Track (empty bar)
@@ -639,7 +1075,97 @@ public final class ArenaBattleTransitionOverlay {
         }
     }
 
+    /**
+     * Converte um ID de item (qualquer formato) para um Identifier válido.
+     * Suporta:
+     *   "cobblemon:focus_sash"   → cobblemon:focus_sash
+     *   "cobblemon.focus_sash"   → cobblemon:focus_sash  (legado)
+     *   "focus_sash"             → cobblemon:focus_sash  (legado sem namespace)
+     */
+    static net.minecraft.util.Identifier resolveItemIdentifier(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            // Formato correto: "namespace:path"
+            if (raw.contains(":")) {
+                return net.minecraft.util.Identifier.of(raw);
+            }
+            // Formato legado com ponto: "cobblemon.focus_sash" ou "cobblemon.item.focus_sash"
+            // Extrai a parte do path (depois do último ponto)
+            if (raw.contains(".")) {
+                int lastDot = raw.lastIndexOf('.');
+                String path = raw.substring(lastDot + 1);
+                // Tenta com namespace "cobblemon" primeiro
+                net.minecraft.util.Identifier id =
+                    net.minecraft.util.Identifier.of("cobblemon", path);
+                net.minecraft.item.Item it =
+                    net.minecraft.registry.Registries.ITEM.get(id);
+                if (it != null && it != net.minecraft.item.Items.AIR) return id;
+                // Fallback: namespace minecraft
+                return net.minecraft.util.Identifier.of("minecraft", path);
+            }
+            // Sem namespace e sem ponto: assume cobblemon
+            return net.minecraft.util.Identifier.of("cobblemon", raw);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Limpa um nome de item que pode ter chegado como chave de tradução.
+     * Ex: "cobblemon.focus_sash" → "Focus Sash"
+     *     "Focus Sash"            → "Focus Sash" (sem mudança)
+     */
+    static String cleanItemDisplayName(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        // Se contém ponto, extrai a parte após o último ponto
+        int lastDot = raw.lastIndexOf('.');
+        String name = (lastDot >= 0 && lastDot < raw.length() - 1)
+            ? raw.substring(lastDot + 1)
+            : raw;
+        name = name.replace('_', ' ').replace('-', ' ');
+        // Capitaliza cada palavra
+        StringBuilder sb = new StringBuilder();
+        for (String word : name.split(" ")) {
+            if (word.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb
+                .append(Character.toUpperCase(word.charAt(0)))
+                .append(word.substring(1));
+        }
+        return sb.toString();
+    }
+
+    private static int mix(int first, int second, float amount) {
+        float t = Math.max(0.0F, Math.min(1.0F, amount));
+        int a = Math.round(
+            ((first >> 24) & 0xFF) +
+                (((second >> 24) & 0xFF) - ((first >> 24) & 0xFF)) * t
+        );
+        int r = Math.round(
+            ((first >> 16) & 0xFF) +
+                (((second >> 16) & 0xFF) - ((first >> 16) & 0xFF)) * t
+        );
+        int g = Math.round(
+            ((first >> 8) & 0xFF) +
+                (((second >> 8) & 0xFF) - ((first >> 8) & 0xFF)) * t
+        );
+        int b = Math.round(
+            (first & 0xFF) + ((second & 0xFF) - (first & 0xFF)) * t
+        );
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
     private static int color(int r, int g, int b, int a) {
         return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private static String getRankTierName(int elo) {
+        if (elo >= 2400) return "Grao-Mestre";
+        if (elo >= 2200) return "Mestre";
+        if (elo >= 2000) return "Diamante";
+        if (elo >= 1800) return "Platina";
+        if (elo >= 1600) return "Ouro";
+        if (elo >= 1400) return "Prata";
+        return elo >= 1000 ? "Bronze" : "Iniciante";
     }
 }

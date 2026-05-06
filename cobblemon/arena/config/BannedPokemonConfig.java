@@ -105,8 +105,8 @@ public final class BannedPokemonConfig {
      * @param server the running Minecraft server instance
      */
     public static void load(MinecraftServer server) {
-        File worldDir = server.getSavePath(WorldSavePath.ROOT).toFile();
-        File arenaDir = new File(worldDir, "cobblemon_arena");
+        File configDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().toFile();
+        File arenaDir = new File(configDir, "cobblemon_arena");
         if (!arenaDir.exists()) {
             arenaDir.mkdirs();
         }

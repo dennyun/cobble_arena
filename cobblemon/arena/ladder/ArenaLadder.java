@@ -272,7 +272,7 @@ public final class ArenaLadder {
         "singles",
         50,
         false,
-        List.of("Same Type Clause")
+        List.of()
     );
     private static final ArenaLadder CASUAL_MONOTYPE_LV50_LEG = vgcQuickPreset(
         "casual_monotype_lv50_leg",
@@ -280,7 +280,7 @@ public final class ArenaLadder {
         "singles",
         50,
         true,
-        List.of("Same Type Clause")
+        List.of()
     );
     private static final ArenaLadder CASUAL_MONOTYPE_LV100 = vgcQuickPreset(
         "casual_monotype_lv100",
@@ -288,7 +288,7 @@ public final class ArenaLadder {
         "singles",
         100,
         false,
-        List.of("Same Type Clause")
+        List.of()
     );
     private static final ArenaLadder CASUAL_MONOTYPE_LV100_LEG = vgcQuickPreset(
         "casual_monotype_lv100_leg",
@@ -296,7 +296,7 @@ public final class ArenaLadder {
         "singles",
         100,
         true,
-        List.of("Same Type Clause")
+        List.of()
     );
 
     private static final List<ArenaLadder> CASUAL_LADDERS = List.of(
@@ -467,7 +467,7 @@ public final class ArenaLadder {
         new java.util.ArrayList<>(VGC_ITEM_BANS)
     );
 
-    private static final List<ArenaLadder> RANKED_PRESETS = List.of(
+    public static final List<ArenaLadder> RANKED_PRESETS = List.of(
         RANKED_SINGLES_LV50,
         RANKED_SINGLES_LV50_LEG,
         RANKED_SINGLES_LV100,

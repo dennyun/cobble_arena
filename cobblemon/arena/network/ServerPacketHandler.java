@@ -53,6 +53,18 @@ public final class ServerPacketHandler {
             ArenaServerStatusPacket.TYPE,
             ArenaServerStatusPacket.CODEC
         );
+        registerS2CPayloadType(
+            ArenaRankedSyncPacket.TYPE,
+            ArenaRankedSyncPacket.CODEC
+        );
+        registerS2CPayloadType(
+            ActiveBattlesUpdatePacket.TYPE,
+            ActiveBattlesUpdatePacket.CODEC
+        );
+        registerS2CPayloadType(
+            ArenaSpectateStatusPacket.TYPE,
+            ArenaSpectateStatusPacket.CODEC
+        );
 
         registerC2SPayloadType(JoinQueuePacket.TYPE, JoinQueuePacket.CODEC);
         registerC2SPayloadType(CancelQueuePacket.TYPE, CancelQueuePacket.CODEC);
@@ -91,6 +103,10 @@ public final class ServerPacketHandler {
         registerC2SPayloadType(
             ClaimQuestRewardPacket.TYPE,
             ClaimQuestRewardPacket.CODEC
+        );
+        registerC2SPayloadType(
+            RequestActiveBattlesPacket.TYPE,
+            RequestActiveBattlesPacket.CODEC
         );
     }
 
@@ -210,11 +226,13 @@ public final class ServerPacketHandler {
                 ServerPlayerEntity player = context.player();
                 context
                     .server()
-                    .execute(() ->
-                        ArenaSpectatorManager.getInstance().spectateRandomBattle(
-                            player
-                        )
-                    );
+                    .execute(() -> {
+                        if (packet.targetSessionId().isPresent()) {
+                            ArenaSpectatorManager.getInstance().spectateSpecificBattle(player, packet.targetSessionId().get());
+                        } else {
+                            ArenaSpectatorManager.getInstance().spectateRandomBattle(player);
+                        }
+                    });
             }
         );
         ServerPlayNetworking.registerGlobalReceiver(
@@ -224,6 +242,22 @@ public final class ServerPacketHandler {
                 context
                     .server()
                     .execute(() -> handleClaimQuestReward(player, packet));
+            }
+        );
+        ServerPlayNetworking.registerGlobalReceiver(
+            RequestActiveBattlesPacket.TYPE,
+            (packet, context) -> {
+                ServerPlayerEntity player = context.player();
+                context
+                    .server()
+                    .execute(() -> {
+                        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(
+                            player,
+                            new ActiveBattlesUpdatePacket(
+                                cobblemon.arena.access.ArenaAccessService.buildActiveBattlesList(cobblemon.arena.stats.StatsManager.getInstance())
+                            )
+                        );
+                    });
             }
         );
     }
@@ -263,13 +297,11 @@ public final class ServerPacketHandler {
         java.util.List<com.cobblemon.mod.common.pokemon.Pokemon> party =
             cobblemon.arena.ladder.ArenaPartyValidator.getPartyPokemon(player);
 
-        // 1. Team size (all formats require 6 Pokémon for queue entry)
-        int required = ladder.getRequiredTeamSize();
-        if (party.size() < required) {
+        // 1. Team size (queue always requires a full team of 6)
+        if (party.size() < 6) {
             player.sendMessage(
                 net.minecraft.text.Text.literal(
-                    "§cTime insuficiente: precisa de §f" +
-                        required +
+                    "§cTime insuficiente: precisa de §f6" +
                         " §cPokémon para entrar na fila. Você tem §f" +
                         party.size() +
                         "§c."
@@ -293,29 +325,63 @@ public final class ServerPacketHandler {
             return;
         }
 
-        // 3. Item clause (no duplicate held items)
-        if (ladder.enforcesItemClause()) {
-            java.util.Set<String> seen = new java.util.HashSet<>();
+        // 3. No duplicate held items in queue
+        java.util.Set<String> seenItems = new java.util.HashSet<>();
+        for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
+            String itemId = normalizeHeldItemId(p);
+            if (itemId == null || itemId.isBlank()) continue;
+            if (!seenItems.add(itemId)) {
+                player.sendMessage(
+                    net.minecraft.text.Text.literal(
+                        "§cItem repetido no time: §f" +
+                            itemId +
+                            "§c. Cada Pokémon deve ter um item diferente."
+                    ),
+                    false
+                );
+                sendQueueRejected(player);
+                return;
+            }
+        }
+
+        // 4. No duplicate species in queue
+        java.util.Set<String> seenSpecies = new java.util.HashSet<>();
+        for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
+            String speciesId = normalizeSpeciesId(p);
+            if (speciesId == null || speciesId.isBlank()) continue;
+            if (!seenSpecies.add(speciesId)) {
+                player.sendMessage(
+                    net.minecraft.text.Text.literal(
+                        "§cPokémon repetido no time: §f" +
+                            speciesId +
+                            "§c. Não é permitido repetir espécie na fila."
+                    ),
+                    false
+                );
+                sendQueueRejected(player);
+                return;
+            }
+        }
+
+        // 5. Legendary block validation
+        if (packet.blockLegendaries()) {
             for (com.cobblemon.mod.common.pokemon.Pokemon p : party) {
-                if (p.heldItem() != null && !p.heldItem().isEmpty()) {
-                    String itemId = p.heldItem().getItem().toString();
-                    if (!seen.add(itemId)) {
-                        player.sendMessage(
-                            net.minecraft.text.Text.literal(
-                                "§cItem repetido no time: §f" +
-                                    itemId +
-                                    "§c. Cada Pokémon deve ter um item diferente."
-                            ),
-                            false
-                        );
-                        sendQueueRejected(player);
-                        return;
-                    }
+                String speciesId = normalizeSpeciesId(p);
+                if (cobblemon.arena.format.VGCRules.isRestricted(speciesId)) {
+                    player.sendMessage(
+                        net.minecraft.text.Text.literal(
+                            "§cPokémon não permitido: §f" + speciesId + "§c.\n" +
+                            "§cA opção 'Sem Lendários Restritos' está ativa para esta fila."
+                        ),
+                        false
+                    );
+                    sendQueueRejected(player);
+                    return;
                 }
             }
         }
 
-        MatchmakingQueue.getInstance().joinQueue(player, ladder);
+        MatchmakingQueue.getInstance().joinQueue(player, ladder, packet.blockLegendaries());
     }
 
     /** Sends a QueueStatusPacket(inQueue=false) so the client resets the counter. */
@@ -348,6 +414,38 @@ public final class ServerPacketHandler {
             return ArenaLadder.vgcPresetByChoice("monotype", level, allowLeg);
         } else {
             return ArenaLadder.vgcPresetByChoice(format, level, allowLeg);
+        }
+    }
+
+    private static String normalizeSpeciesId(
+        com.cobblemon.mod.common.pokemon.Pokemon pokemon
+    ) {
+        if (pokemon == null) return "";
+        try {
+            return pokemon
+                .getSpecies()
+                .getResourceIdentifier()
+                .getPath()
+                .toLowerCase(java.util.Locale.ROOT);
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String normalizeHeldItemId(
+        com.cobblemon.mod.common.pokemon.Pokemon pokemon
+    ) {
+        if (pokemon == null) return null;
+        try {
+            net.minecraft.item.ItemStack held = pokemon.heldItem();
+            if (held == null || held.isEmpty()) return null;
+            net.minecraft.util.Identifier id =
+                net.minecraft.registry.Registries.ITEM.getId(held.getItem());
+            return id != null
+                ? id.getPath().toLowerCase(java.util.Locale.ROOT)
+                : null;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -483,22 +581,29 @@ public final class ServerPacketHandler {
             return;
         }
         List<Pokemon> party = ArenaPartyValidator.getPartyPokemon(player);
-        int slot = packet.slotIndex();
-        if (slot < 0 || slot >= party.size()) {
+        java.util.List<Integer> slots = packet.slotIndexes();
+        if (slots == null || slots.isEmpty()) {
             return;
         }
-        Pokemon selected = party.get(slot);
-        if (selected == null) {
-            return;
+        int requiredLeads = session.getRequiredLeadCount();
+        java.util.List<UUID> selectedIds = new java.util.ArrayList<>();
+        for (Integer slot : slots) {
+            if (slot == null || slot < 0 || slot >= party.size()) continue;
+            Pokemon selected = party.get(slot);
+            if (selected == null) continue;
+            UUID selectedId = selected.getUuid();
+            if (selectedId == null || selectedIds.contains(selectedId)) continue;
+            selectedIds.add(selectedId);
+            if (selectedIds.size() >= requiredLeads) break;
         }
+        if (selectedIds.isEmpty()) return;
 
-        UUID selectedId = selected.getUuid();
-        session.setSelectedLead(player, selectedId);
+        session.setSelectedLeads(player, selectedIds);
         CobblemonArena.LOGGER.debug(
-            "Player {} selected arena lead slot {} ({})",
+            "Player {} selected arena leads {} ({} required)",
             player.getName().getString(),
-            slot,
-            selectedId
+            selectedIds,
+            requiredLeads
         );
         ArenaBattleManager.getInstance().tryStartPendingBattleIfReady(session);
     }

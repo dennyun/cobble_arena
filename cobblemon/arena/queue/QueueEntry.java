@@ -9,22 +9,26 @@ import java.util.UUID;
  */
 public final class QueueEntry {
     private static final int INITIAL_RANGE = 100;
-    private static final int RANGE_EXPANSION = 50;       // per expansion step
-    private static final int EXPANSION_INTERVAL_TICKS = 300; // 15 seconds at 20tps
+    private static final int RANGE_EXPANSION = 100;       // per expansion step
+    private static final int EXPANSION_INTERVAL_TICKS = 600; // 30 seconds at 20tps
     private static final int MAX_RANGE = 500;
 
     private final UUID playerUUID;
     private final String playerName;
     private final ArenaLadder ladder;
-    private final int eloRating;
+    private final double rating;
+    private final double rd;
+    private final boolean blockLegendaries;
     private final long joinedAtMs;
     private int expansionSteps; // incremented every EXPANSION_INTERVAL_TICKS ticks
 
-    public QueueEntry(UUID playerUUID, String playerName, ArenaLadder ladder, int eloRating) {
+    public QueueEntry(UUID playerUUID, String playerName, ArenaLadder ladder, double rating, double rd, boolean blockLegendaries) {
         this.playerUUID = playerUUID;
         this.playerName = playerName;
         this.ladder = ladder;
-        this.eloRating = eloRating;
+        this.rating = rating;
+        this.rd = rd;
+        this.blockLegendaries = blockLegendaries;
         this.joinedAtMs = System.currentTimeMillis();
         this.expansionSteps = 0;
     }
@@ -47,8 +51,8 @@ public final class QueueEntry {
      * Returns the current ELO search range, which grows over time as the player
      * waits in the queue, capped at {@code MAX_RANGE}.
      */
-    public int currentRange() {
-        return Math.min(MAX_RANGE, INITIAL_RANGE + expansionSteps * RANGE_EXPANSION);
+    public double currentRange() {
+        return Math.min(MAX_RANGE, this.rd + expansionSteps * RANGE_EXPANSION);
     }
 
     /**
@@ -63,7 +67,10 @@ public final class QueueEntry {
      * @return {@code true} if the two entries are within a mutually acceptable range
      */
     public boolean canMatchWith(QueueEntry other) {
-        int diff = Math.abs(this.eloRating - other.eloRating);
+        if (this.blockLegendaries != other.blockLegendaries) {
+            return false;
+        }
+        double diff = Math.abs(this.rating - other.rating);
         return diff <= Math.min(this.currentRange(), other.currentRange());
     }
 
@@ -83,8 +90,16 @@ public final class QueueEntry {
         return ladder;
     }
 
-    public int getEloRating() {
-        return eloRating;
+    public double getRating() {
+        return rating;
+    }
+
+    public double getRd() {
+        return rd;
+    }
+    
+    public boolean isBlockLegendaries() {
+        return blockLegendaries;
     }
 
     public long getJoinedAtMs() {

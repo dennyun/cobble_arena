@@ -138,7 +138,7 @@ public class ArenaLadderScreen extends ArenaScreenBase {
 
         int rank = ArenaClientState.getPlayerRank();
         int total = ArenaClientState.getTotalRankedPlayers();
-        String rankLabel = rank > 0 ? "#" + rank + " / " + total : "Sem rank";
+        String rankLabel = rank > 0 ? "#" + rank + " / " + total : "Iniciante";
 
         drawSection(graphics, x, y, w, 62, SECTION_BG);
 

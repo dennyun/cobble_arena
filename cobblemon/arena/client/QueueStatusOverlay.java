@@ -87,77 +87,56 @@ public class QueueStatusOverlay {
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.match_found"
               ).getString()
-            : buildTeamLine();
+            : (
+                isRankedQueue()
+                    ? "Procurando partida ranqueada"
+                    : "Procurando partida casual"
+            );
         String line2 = matchFound
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.vs_line",
                   opponentName
               ).getString()
-            : buildModeLine();
+            : formatClock(getElapsedSeconds());
         String line3 = matchFound
             ? Text.translatable(
                   "gui.cobblemon_arena.queue_overlay.starting",
                   countdownSeconds
               ).getString()
-            : buildStatusLine();
+            : "";
 
-        int paddingX = 8;
-        int paddingY = 7;
-        int lineHeight = 10;
+        int paddingX = 12;
+        int paddingY = 8;
+        int lineHeight = 12;
         int boxWidth = Math.max(
-            116,
+            120,
             Math.max(
                     font.getWidth(line1),
                     Math.max(font.getWidth(line2), font.getWidth(line3))
                 ) +
                 paddingX * 2
         );
-        int boxHeight = paddingY * 2 + lineHeight * 3 + 1;
+        int numLines = matchFound ? 3 : 2;
+        int boxHeight = paddingY * 2 + lineHeight * numLines;
 
-        int targetX = screenWidth - boxWidth - 10;
-        int startX = screenWidth + 18;
+        int targetX = (screenWidth - boxWidth) / 2;
+        int startX = targetX;
         int boxX = isClosing
             ? (int) (targetX + (screenWidth - targetX + 18) * slideProgress)
             : (int) (startX + (targetX - startX) * slideProgress);
-        int boxY = Math.max(76, screenHeight / 2 - boxHeight / 2);
+        int boxY = 12;
 
-        int panelBg = applyAlpha(PANEL_BG, alpha);
-        int borderColor = applyAlpha(BORDER_COLOR, alpha);
-        int borderHighlight = applyAlpha(BORDER_HIGHLIGHT, alpha);
-        int accentColor = applyAlpha(queueAccentColor(), alpha);
+        int panelBg = applyAlpha(0x90000000, alpha); // Simple shadow
 
         graphics.fill(boxX, boxY, boxX + boxWidth, boxY + boxHeight, panelBg);
-        graphics.fill(boxX, boxY, boxX + 3, boxY + boxHeight, accentColor);
-        graphics.fill(boxX, boxY, boxX + boxWidth, boxY + 1, borderHighlight);
-        graphics.fill(
-            boxX,
-            boxY + boxHeight - 1,
-            boxX + boxWidth,
-            boxY + boxHeight,
-            borderColor
-        );
-        graphics.fill(boxX, boxY, boxX + 1, boxY + boxHeight, borderColor);
-        graphics.fill(
-            boxX + boxWidth - 1,
-            boxY,
-            boxX + boxWidth,
-            boxY + boxHeight,
-            borderColor
-        );
-        graphics.fill(
-            boxX + 3,
-            boxY + boxHeight - 3,
-            boxX + boxWidth - 1,
-            boxY + boxHeight - 1,
-            applyAlpha(0x50000000, alpha)
-        );
 
-        int textX = boxX + paddingX;
         int textY = boxY + paddingY;
+        
+        // Centered texts
         graphics.drawText(
             font,
             line1,
-            textX,
+            boxX + (boxWidth - font.getWidth(line1)) / 2,
             textY,
             applyAlpha(TEXT_PRIMARY, alpha),
             false
@@ -165,19 +144,22 @@ public class QueueStatusOverlay {
         graphics.drawText(
             font,
             line2,
-            textX,
+            boxX + (boxWidth - font.getWidth(line2)) / 2,
             textY + lineHeight,
             applyAlpha(TEXT_SECONDARY, alpha),
             false
         );
-        graphics.drawText(
-            font,
-            line3,
-            textX,
-            textY + lineHeight * 2,
-            applyAlpha(matchFound ? ACCENT_RED : TEXT_DIM, alpha),
-            false
-        );
+        
+        if (matchFound) {
+            graphics.drawText(
+                font,
+                line3,
+                boxX + (boxWidth - font.getWidth(line3)) / 2,
+                textY + lineHeight * 2,
+                applyAlpha(ACCENT_RED, alpha),
+                false
+            );
+        }
     }
 
     public void tick() {}
@@ -365,6 +347,12 @@ public class QueueStatusOverlay {
         int minutes = seconds / 60;
         int remainder = seconds % 60;
         return minutes > 0 ? minutes + "m " + remainder + "s" : remainder + "s";
+    }
+
+    private String formatClock(int seconds) {
+        int minutes = Math.max(0, seconds) / 60;
+        int remainder = Math.max(0, seconds) % 60;
+        return String.format("%02d:%02d", minutes, remainder);
     }
 
     private int applyAlpha(int color, float alpha) {

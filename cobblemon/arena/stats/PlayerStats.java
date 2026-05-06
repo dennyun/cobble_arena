@@ -1,6 +1,7 @@
 package cobblemon.arena.stats;
 
 import cobblemon.arena.ladder.ArenaLadder;
+import cobblemon.arena.network.ArenaTransitionPokemonEntryPayload;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -13,6 +14,7 @@ import java.util.UUID;
 public class PlayerStats {
 
     private static final int DEFAULT_RANKED_RATING = 0;
+    private static final int MAX_RECENT_MATCHES = 10;
     private final UUID playerUUID;
     private String playerName;
     private int rankedRating;
@@ -27,6 +29,8 @@ public class PlayerStats {
     private long currentSeasonStartedAtMs = 0L;
     private Map<String, PlayerStats.ArchivedSeasonStats> archivedRankedSeasons =
         new LinkedHashMap<>();
+    private Map<String, PlayerStats.CasualLadderStats> casualLadders =
+        new LinkedHashMap<>();
     private Set<String> grantedRewardMilestones = new LinkedHashSet<>();
     private int quickWins;
     private int quickLosses;
@@ -36,12 +40,18 @@ public class PlayerStats {
         new LinkedHashMap<>();
     private long lastPlayedTime;
     private int totalBattles;
+    
+    private int honorScore = 100;
+    private int totalTurnsPlayed = 0;
+    private int matchesWithTurnsRecorded = 0;
+    private Map<String, Integer> monotypeWins = new LinkedHashMap<>();
+    
     private transient boolean legacyRankedMigrated;
 
     public PlayerStats(UUID playerUUID, String playerName) {
         this.playerUUID = playerUUID;
         this.playerName = playerName;
-        this.rankedRating = DEFAULT_RANKED_RATING; // 0 — new players start as Sem Rank
+        this.rankedRating = DEFAULT_RANKED_RATING; // 0 — new players start as Iniciante
         this.rankedWins = 0;
         this.rankedLosses = 0;
         this.rankedStreak = 0;
@@ -69,7 +79,7 @@ public class PlayerStats {
     }
 
     public int getRankedRating(String ladderId) {
-        return this.getExistingRankedLadderStats(ladderId).getRankedRating();
+        return this.getExistingRankedLadderStats(ladderId).getRp();
     }
 
     public int getRankedWins() {
@@ -112,6 +122,72 @@ public class PlayerStats {
 
     public int getQuickLosses() {
         return this.quickLosses;
+    }
+
+    public int getQuickWins(String formatId) {
+        if (this.casualLadders != null && this.casualLadders.containsKey(formatId)) {
+            return this.casualLadders.get(formatId).getCasualWins();
+        }
+        return 0;
+    }
+
+    public int getQuickLosses(String formatId) {
+        if (this.casualLadders != null && this.casualLadders.containsKey(formatId)) {
+            return this.casualLadders.get(formatId).getCasualLosses();
+        }
+        return 0;
+    }
+
+    public int getQuickStreak(String formatId) {
+        if (this.casualLadders != null && this.casualLadders.containsKey(formatId)) {
+            return this.casualLadders.get(formatId).getCasualStreak();
+        }
+        return 0;
+    }
+
+    public Map<String, PlayerStats.CasualLadderStats> getCasualLadders() {
+        return this.casualLadders != null ? this.casualLadders : Map.of();
+    }
+
+    public int getHonorScore() {
+        return this.honorScore;
+    }
+
+    public void setHonorScore(int honorScore) {
+        this.honorScore = honorScore;
+    }
+
+    public int getTotalTurnsPlayed() {
+        return this.totalTurnsPlayed;
+    }
+
+    public void addTurnsPlayed(int turns) {
+        if (turns > 0) {
+            this.totalTurnsPlayed += turns;
+            this.matchesWithTurnsRecorded++;
+        }
+    }
+
+    public int getTurnAverage() {
+        if (this.matchesWithTurnsRecorded == 0) return 0;
+        return this.totalTurnsPlayed / this.matchesWithTurnsRecorded;
+    }
+
+    public Map<String, Integer> getMonotypeWins() {
+        if (this.monotypeWins == null) {
+            this.monotypeWins = new LinkedHashMap<>();
+        }
+        return this.monotypeWins;
+    }
+
+    public void addMonotypeWin(String type) {
+        if (this.monotypeWins == null) {
+            this.monotypeWins = new LinkedHashMap<>();
+        }
+        if (type != null && !type.isBlank()) {
+            String normalType = type.trim().toLowerCase(java.util.Locale.ROOT);
+            this.monotypeWins.put(normalType, this.monotypeWins.getOrDefault(normalType, 0) + 1);
+        }
     }
 
     public int getLifetimeRankedWins() {
@@ -172,7 +248,12 @@ public class PlayerStats {
         return (List<PlayerStats.RecentMatchStats>) (this.recentMatches !=
             null &&
         !this.recentMatches.isEmpty()
-            ? new ArrayList<>(this.recentMatches)
+            ? new ArrayList<>(
+                this.recentMatches.subList(
+                        0,
+                        Math.min(MAX_RECENT_MATCHES, this.recentMatches.size())
+                    )
+            )
             : List.of());
     }
 
@@ -215,44 +296,81 @@ public class PlayerStats {
         return total == 0 ? 0.0 : ((double) this.quickWins / total) * 100.0;
     }
 
-    public void recordRankedMatch(boolean won, int ratingChange) {
+    public void recordRankedMatch(boolean won, GlickoCalculator.RPResult rpResult) {
         this.recordRankedMatch(
             ArenaLadder.defaultRanked().getId(),
             won,
-            ratingChange
+            rpResult
         );
     }
 
     public void recordRankedMatch(
         String ladderId,
         boolean won,
-        int ratingChange
+        GlickoCalculator.RPResult rpResult
     ) {
         PlayerStats.RankedLadderStats stats = this.getOrCreateRankedLadderStats(
             ladderId
         );
-        stats.rankedRating += ratingChange;
+        
+        int oldTierFloor = GlickoCalculator.getTierFloor(stats.getRp());
+        
+        stats.setRp(rpResult.newRP);
+        stats.setRating(rpResult.glicko.newRating);
+        stats.setRd(rpResult.glicko.newRD);
+        stats.setVolatility(rpResult.glicko.newVolatility);
+        
+        int newTierFloor = GlickoCalculator.getTierFloor(stats.getRp());
+        if (newTierFloor > oldTierFloor) {
+            stats.setProtectionMatches(3); // 3 matches of protection on tier up
+        } else if (!won && stats.getProtectionMatches() > 0) {
+            stats.setProtectionMatches(stats.getProtectionMatches() - 1);
+        }
+
         this.totalBattles++;
         this.lastPlayedTime = System.currentTimeMillis();
         if (won) {
             stats.rankedWins++;
             stats.rankedStreak++;
+            stats.rankedLossStreak = 0;
             if (stats.rankedStreak > stats.rankedBestStreak) {
                 stats.rankedBestStreak = stats.rankedStreak;
             }
         } else {
             stats.rankedLosses++;
             stats.rankedStreak = 0;
+            stats.rankedLossStreak++;
         }
     }
 
     public void recordQuickMatch(boolean won) {
+        this.recordQuickMatch("default", won);
+    }
+
+    public void recordQuickMatch(String formatId, boolean won) {
         this.totalBattles++;
         this.lastPlayedTime = System.currentTimeMillis();
+        
+        if (this.casualLadders == null) {
+            this.casualLadders = new LinkedHashMap<>();
+        }
+        
+        PlayerStats.CasualLadderStats stats = this.casualLadders.computeIfAbsent(
+            formatId,
+            k -> new PlayerStats.CasualLadderStats()
+        );
+        
         if (won) {
             this.quickWins++;
+            stats.casualWins++;
+            stats.casualStreak++;
+            if (stats.casualStreak > stats.casualBestStreak) {
+                stats.casualBestStreak = stats.casualStreak;
+            }
         } else {
             this.quickLosses++;
+            stats.casualLosses++;
+            stats.casualStreak = 0;
         }
     }
 
@@ -263,7 +381,9 @@ public class PlayerStats {
         String opponentName,
         int ratingDelta,
         int ratingAfter,
-        List<PlayerStats.PokemonUsageRecordInput> teamPokemon
+        List<PlayerStats.PokemonUsageRecordInput> teamPokemon,
+        List<ArenaTransitionPokemonEntryPayload> ownTeam,
+        List<ArenaTransitionPokemonEntryPayload> opponentTeam
     ) {
         long playedAt = System.currentTimeMillis();
         this.addRecentMatch(
@@ -274,7 +394,9 @@ public class PlayerStats {
                 opponentName,
                 ratingDelta,
                 ratingAfter,
-                playedAt
+                playedAt,
+                ownTeam,
+                opponentTeam
             )
         );
         this.updatePokemonUsage(teamPokemon, won);
@@ -350,7 +472,7 @@ public class PlayerStats {
                     seasonId,
                     seasonName,
                     seasonStartedAtMs,
-                    1000,
+                    0,
                     carryResetFactor
                 );
             } else {
@@ -481,7 +603,7 @@ public class PlayerStats {
     }
 
     public String getRankTitle(String ladderId) {
-        return getRankTitleForRating(this.getRankedRating(ladderId));
+        return getRankTitleForRating(this.getOrCreateRankedLadderStats(ladderId).getRp());
     }
 
     public String getRankColor() {
@@ -489,7 +611,7 @@ public class PlayerStats {
     }
 
     public String getRankColor(String ladderId) {
-        return getRankColorForRating(this.getRankedRating(ladderId));
+        return getRankColorForRating(this.getOrCreateRankedLadderStats(ladderId).getRp());
     }
 
     private PlayerStats.RankedLadderStats getExistingRankedLadderStats(
@@ -515,12 +637,18 @@ public class PlayerStats {
         PlayerStats.RankedLadderStats stats = this.rankedLadders.get(
             normalizeLadderId(ladderId)
         );
+        if (stats != null && stats.rp == 0 && stats.rankedRating > 0) {
+            // Hot-migration for JSON objects that have rankedRating but no RP
+            stats.rp = stats.rankedRating;
+            stats.rating = 1500.0;
+            stats.rd = 350.0;
+        }
         return stats != null
             ? stats
             : PlayerStats.RankedLadderStats.defaultStats();
     }
 
-    private PlayerStats.RankedLadderStats getOrCreateRankedLadderStats(
+    public PlayerStats.RankedLadderStats getOrCreateRankedLadderStats(
         String ladderId
     ) {
         this.migrateLegacyRankedStats();
@@ -528,10 +656,16 @@ public class PlayerStats {
             this.rankedLadders = new LinkedHashMap<>();
         }
 
-        return this.rankedLadders.computeIfAbsent(
+        PlayerStats.RankedLadderStats stats = this.rankedLadders.computeIfAbsent(
             normalizeLadderId(ladderId),
             ignored -> new PlayerStats.RankedLadderStats()
         );
+        if (stats.rp == 0 && stats.rankedRating > 0) {
+            stats.rp = stats.rankedRating;
+            stats.rating = 1500.0;
+            stats.rd = 350.0;
+        }
+        return stats;
     }
 
     private void addRecentMatch(PlayerStats.RecentMatchStats match) {
@@ -541,7 +675,7 @@ public class PlayerStats {
 
         this.recentMatches.add(0, match);
 
-        while (this.recentMatches.size() > 40) {
+        while (this.recentMatches.size() > MAX_RECENT_MATCHES) {
             this.recentMatches.remove(this.recentMatches.size() - 1);
         }
     }
@@ -569,13 +703,19 @@ public class PlayerStats {
                             normalizedKey,
                             ignored ->
                                 new PlayerStats.PokemonUsageStats(
-                                    entry.speciesName
+                                    entry.speciesName,
+                                    entry.speciesKey
                                 )
                         );
                     if (
                         usage.speciesName == null || usage.speciesName.isBlank()
                     ) {
                         usage.speciesName = entry.speciesName;
+                    }
+                    if (
+                        usage.speciesKey == null || usage.speciesKey.isBlank()
+                    ) {
+                        usage.speciesKey = entry.speciesKey;
                     }
 
                     usage.uses++;
@@ -598,7 +738,7 @@ public class PlayerStats {
 
             if (this.rankedLadders.isEmpty()) {
                 if (
-                    this.rankedRating != 1000 ||
+                    this.rankedRating != 0 ||
                     this.rankedWins != 0 ||
                     this.rankedLosses != 0 ||
                     this.rankedStreak != 0 ||
@@ -607,6 +747,7 @@ public class PlayerStats {
                     PlayerStats.RankedLadderStats migrated =
                         new PlayerStats.RankedLadderStats();
                     migrated.rankedRating = this.rankedRating;
+                    migrated.rp = this.rankedRating; // Migrate legacy rating to new RP
                     migrated.rankedWins = this.rankedWins;
                     migrated.rankedLosses = this.rankedLosses;
                     migrated.rankedStreak = this.rankedStreak;
@@ -615,7 +756,7 @@ public class PlayerStats {
                         ArenaLadder.defaultRanked().getId(),
                         migrated
                     );
-                    this.rankedRating = 1000;
+                    this.rankedRating = 0;
                     this.rankedWins = 0;
                     this.rankedLosses = 0;
                     this.rankedStreak = 0;
@@ -639,10 +780,16 @@ public class PlayerStats {
                 if (entry.getValue() != null) {
                     PlayerStats.RankedLadderStats copied =
                         new PlayerStats.RankedLadderStats();
+                    copied.rating = entry.getValue().rating;
+                    copied.rd = entry.getValue().rd;
+                    copied.volatility = entry.getValue().volatility;
+                    copied.rp = entry.getValue().rp;
+                    copied.protectionMatches = entry.getValue().protectionMatches;
                     copied.rankedRating = entry.getValue().rankedRating;
                     copied.rankedWins = entry.getValue().rankedWins;
                     copied.rankedLosses = entry.getValue().rankedLosses;
                     copied.rankedStreak = entry.getValue().rankedStreak;
+                    copied.rankedLossStreak = entry.getValue().rankedLossStreak;
                     copied.rankedBestStreak = entry.getValue().rankedBestStreak;
                     copy.put(entry.getKey(), copied);
                 }
@@ -660,38 +807,38 @@ public class PlayerStats {
     }
 
     private static String getRankTitleForRating(int rating) {
-        if (rating >= 2400) {
+        if (rating >= 2800) {
             return "§6§lGrao-Mestre";
-        } else if (rating >= 2200) {
+        } else if (rating >= 2400) {
             return "§e§lMestre";
         } else if (rating >= 2000) {
             return "§d§lDiamante";
-        } else if (rating >= 1800) {
-            return "§b§lPlatina";
         } else if (rating >= 1600) {
+            return "§b§lPlatina";
+        } else if (rating >= 1200) {
             return "§a§lOuro";
-        } else if (rating >= 1400) {
+        } else if (rating >= 800) {
             return "§f§lPrata";
         } else {
-            return rating >= 1000 ? "§7§lBronze" : "§8Sem rank";
+            return rating >= 400 ? "§7§lBronze" : "§8Iniciante";
         }
     }
 
     private static String getRankColorForRating(int rating) {
-        if (rating >= 2400) {
+        if (rating >= 2800) {
             return "§6";
-        } else if (rating >= 2200) {
+        } else if (rating >= 2400) {
             return "§e";
         } else if (rating >= 2000) {
             return "§d";
-        } else if (rating >= 1800) {
-            return "§b";
         } else if (rating >= 1600) {
+            return "§b";
+        } else if (rating >= 1200) {
             return "§a";
-        } else if (rating >= 1400) {
+        } else if (rating >= 800) {
             return "§f";
         } else {
-            return rating >= 1000 ? "§7" : "§8";
+            return rating >= 400 ? "§7" : "§8";
         }
     }
 
@@ -748,8 +895,10 @@ public class PlayerStats {
 
     public static final class PokemonUsageRecordInput {
 
-        private final String speciesKey;
-        private final String speciesName;
+        /** Cobblemon resource ID, e.g. {@code "cobblemon:pikachu"}. */
+        public final String speciesKey;
+        /** Display name, e.g. {@code "Pikachu"}. */
+        public final String speciesName;
 
         public PokemonUsageRecordInput(String speciesKey, String speciesName) {
             this.speciesKey = speciesKey == null ? "" : speciesKey;
@@ -759,7 +908,8 @@ public class PlayerStats {
 
     public static final class PokemonUsageStats {
 
-        private String speciesName;
+        private String speciesKey = ""; // e.g. "cobblemon:pikachu"
+        private String speciesName = "";
         private int uses;
         private int wins;
         private int losses;
@@ -767,7 +917,16 @@ public class PlayerStats {
         public PokemonUsageStats() {}
 
         public PokemonUsageStats(String speciesName) {
-            this.speciesName = speciesName;
+            this.speciesName = speciesName != null ? speciesName : "";
+        }
+
+        public PokemonUsageStats(String speciesName, String speciesKey) {
+            this.speciesName = speciesName != null ? speciesName : "";
+            this.speciesKey = speciesKey != null ? speciesKey : "";
+        }
+
+        public String getSpeciesKey() {
+            return this.speciesKey;
         }
 
         public String getSpeciesName() {
@@ -795,14 +954,65 @@ public class PlayerStats {
 
     public static final class RankedLadderStats {
 
-        private int rankedRating = 0; // new players start as Sem Rank (< 1000)
+        private double rating = 1500.0;
+        private double rd = 350.0;
+        private double volatility = 0.06;
+        private int rp = 0;
+        private int protectionMatches = 0;
+
+        private int rankedRating = 0; // Legacy / backward compatibility
         private int rankedWins;
         private int rankedLosses;
         private int rankedStreak;
+        private int rankedLossStreak;
         private int rankedBestStreak;
 
+        public double getRating() {
+            return rating;
+        }
+
+        public void setRating(double rating) {
+            this.rating = rating;
+        }
+
+        public double getRd() {
+            return rd;
+        }
+
+        public void setRd(double rd) {
+            this.rd = rd;
+        }
+
+        public double getVolatility() {
+            return volatility;
+        }
+
+        public void setVolatility(double volatility) {
+            this.volatility = volatility;
+        }
+
+        public int getRp() {
+            return Math.max(0, this.rp);
+        }
+
+        public void setRp(int rp) {
+            this.rp = rp;
+        }
+
+        public int getProtectionMatches() {
+            return protectionMatches;
+        }
+
+        public void setProtectionMatches(int protectionMatches) {
+            this.protectionMatches = protectionMatches;
+        }
+
+        public int getRankedLossStreak() {
+            return rankedLossStreak;
+        }
+
         public int getRankedRating() {
-            return this.rankedRating;
+            return Math.max(0, this.rankedRating);
         }
 
         public int getRankedWins() {
@@ -839,6 +1049,8 @@ public class PlayerStats {
         private int ratingDelta;
         private int ratingAfter;
         private long playedAtMs;
+        private List<ArenaTransitionPokemonEntryPayload> ownTeam = List.of();
+        private List<ArenaTransitionPokemonEntryPayload> opponentTeam = List.of();
 
         public RecentMatchStats() {}
 
@@ -849,7 +1061,9 @@ public class PlayerStats {
             String opponentName,
             int ratingDelta,
             int ratingAfter,
-            long playedAtMs
+            long playedAtMs,
+            List<ArenaTransitionPokemonEntryPayload> ownTeam,
+            List<ArenaTransitionPokemonEntryPayload> opponentTeam
         ) {
             this.ranked = ranked;
             this.victory = victory;
@@ -858,6 +1072,10 @@ public class PlayerStats {
             this.ratingDelta = ratingDelta;
             this.ratingAfter = ratingAfter;
             this.playedAtMs = playedAtMs;
+            this.ownTeam = ownTeam == null ? List.of() : List.copyOf(ownTeam);
+            this.opponentTeam = opponentTeam == null
+                ? List.of()
+                : List.copyOf(opponentTeam);
         }
 
         public boolean isRanked() {
@@ -886,6 +1104,42 @@ public class PlayerStats {
 
         public long getPlayedAtMs() {
             return this.playedAtMs;
+        }
+
+        public List<ArenaTransitionPokemonEntryPayload> getOwnTeam() {
+            return this.ownTeam;
+        }
+
+        public List<ArenaTransitionPokemonEntryPayload> getOpponentTeam() {
+            return this.opponentTeam;
+        }
+    }
+
+    public static final class CasualLadderStats {
+
+        private int casualWins;
+        private int casualLosses;
+        private int casualStreak;
+        private int casualBestStreak;
+
+        public int getCasualWins() {
+            return this.casualWins;
+        }
+
+        public int getCasualLosses() {
+            return this.casualLosses;
+        }
+
+        public int getCasualStreak() {
+            return this.casualStreak;
+        }
+
+        public int getCasualBestStreak() {
+            return this.casualBestStreak;
+        }
+
+        public int getTotalGames() {
+            return this.casualWins + this.casualLosses;
         }
     }
 }

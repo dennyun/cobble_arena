@@ -461,7 +461,7 @@ public class ArenaPostMatchScreen extends Screen {
         if (elo >= 1800) return "Platina";
         if (elo >= 1600) return "Ouro";
         if (elo >= 1400) return "Prata";
-        return elo >= 1000 ? "Bronze" : "Sem Rank";
+        return elo >= 1000 ? "Bronze" : "Iniciante";
     }
 
     private static int rankTierColor(int elo) {

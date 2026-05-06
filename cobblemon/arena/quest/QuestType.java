@@ -7,7 +7,14 @@ public enum QuestType {
     WIN_STREAK("Win Streak"),
     PLAY_RANKED("Jogar Ranqueado"),
     PLAY_CASUAL("Jogar Casual"),
-    USE_TYPE("Usar Tipo de Pokémon");
+    USE_TYPE("Usar Tipo de Pokémon"),
+    WIN_WITH_ALIVE("Vencer Com Pokémon Vivos"),
+    WIN_FAST("Vencer Rápido"),
+    PLAY_LONG("Batalha Longa / Turnos"),
+    WIN_BY_FORFEIT("Vencer Por Desistência"),
+    PLAY_NO_FORFEIT("Sem Desistir"),
+    PLAY_MONOTYPE("Jogar Monotype"),
+    KNOCKOUT_TOTAL("Nocautes Totais");
 
     private final String displayName;
 

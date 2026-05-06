@@ -5,6 +5,7 @@ import com.cobblemon.mod.common.client.CobblemonClient;
 public final class ArenaBattleClientState {
    private static int pendingTransitionTicks = 0;
    private static boolean arenaBattleActive = false;
+   private static long battleStartTimeMs = 0L;
 
    private ArenaBattleClientState() {
    }
@@ -20,6 +21,7 @@ public final class ArenaBattleClientState {
 
       if (!arenaBattleActive && CobblemonClient.INSTANCE.getBattle() != null) {
          arenaBattleActive = true;
+         battleStartTimeMs = System.currentTimeMillis();
          pendingTransitionTicks = 0;
       } else {
          if (arenaBattleActive && CobblemonClient.INSTANCE.getBattle() == null) {
@@ -30,6 +32,11 @@ public final class ArenaBattleClientState {
 
    public static boolean isArenaBattleActive() {
       return arenaBattleActive;
+   }
+
+   public static long getBattleDurationMs() {
+      if (!arenaBattleActive || battleStartTimeMs == 0) return 0;
+      return System.currentTimeMillis() - battleStartTimeMs;
    }
 
    public static boolean hasPendingTransition() {

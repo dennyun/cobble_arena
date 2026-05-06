@@ -98,7 +98,7 @@ public final class EloCalculator {
         int k = getKFactor(totalGamesPlayed);
         double expected = getExpectedScore(currentRating, opponentRating);
         double change = k * (actualScore - expected);
-        return currentRating + (int) Math.round(change);
+        return Math.max(0, currentRating + (int) Math.round(change));
     }
 
     /**

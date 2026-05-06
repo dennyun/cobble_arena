@@ -52,7 +52,6 @@ public class ArenaPartyPreviewRenderer {
             int mouseY,
             float partialTick
     ) {
-        drawPanel(graphics, x, y, width, height);
         List<Pokemon> party = ArenaClientState.getPartyPreview();
 
         int rowWidth = 308;

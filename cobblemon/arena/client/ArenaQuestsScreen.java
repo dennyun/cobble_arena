@@ -15,9 +15,9 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
     // ── Layout constants ──────────────────────────────────────────────────
     private static final int QUEST_ROW_H   = 54;   // height of each quest row
     private static final int SECTION_HDR_H = 22;   // section header height
-    private static final int ROW_GAP       = 3;    // gap between rows
-    private static final int SECTION_GAP   = 6;    // gap between the two sections
-    private static final int SECTION_PAD   = 4;    // bottom padding inside section
+    private static final int ROW_GAP       = 4;    // gap between rows
+    private static final int SECTION_GAP   = 8;    // gap between the two sections
+    private static final int SECTION_PAD   = 8;    // bottom padding inside section
 
     // ── State ─────────────────────────────────────────────────────────────
     private final Screen parent;
@@ -148,9 +148,9 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
             return;
         }
 
-        int rowY = y + SECTION_HDR_H + 2;
+        int rowY = y + SECTION_HDR_H + 4;
         for (QuestEntryPayload quest : quests) {
-            drawQuestRow(graphics, mouseX, mouseY, x + 6, rowY, w - 12, quest, accent);
+            drawQuestRow(graphics, mouseX, mouseY, x + 8, rowY, w - 16, quest, accent);
             rowY += QUEST_ROW_H + ROW_GAP;
         }
     }
@@ -162,11 +162,19 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
         int x, int y, int w,
         QuestEntryPayload quest, int accent
     ) {
+        boolean claimable = quest.completed() && !quest.claimed();
+        boolean rowHovered = mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + QUEST_ROW_H;
+
         // Row background
         int rowBg = quest.claimed()
             ? darken(SECTION_INSET, 10)
-            : SECTION_INSET;
+            : (claimable && rowHovered ? mix(SECTION_INSET, SUCCESS_ACCENT, 0.15f) : SECTION_INSET);
         drawSection(graphics, x, y, w, QUEST_ROW_H, rowBg);
+        
+        if (claimable && rowHovered) {
+            graphics.fill(x, y, x + w, y + 1, color(112, 220, 132, 80));
+            graphics.fill(x, y + QUEST_ROW_H - 1, x + w, y + QUEST_ROW_H, color(112, 220, 132, 80));
+        }
 
         // Left status stripe
         int stripeColor = quest.claimed()
@@ -211,18 +219,19 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
         graphics.fill(barX, barY, barX + barW, barY + 1, color(255, 255, 255, 18));
 
         // Description
+        int descColor = quest.claimed() ? TEXT_DIM : TEXT_PRIMARY;
         drawScaledText(
             graphics,
             fitText(quest.description(), textMaxW, SMALL_SCALE),
             x + 8, y + 27,
-            TEXT_SECONDARY, SMALL_SCALE
+            descColor, SMALL_SCALE
         );
 
         // Reward (if any)
         if (!quest.rewardDescription().isBlank()) {
             drawScaledText(
                 graphics,
-                fitText("🎁 " + quest.rewardDescription(), textMaxW, SMALL_SCALE),
+                fitText("🎁 " + quest.rewardDescription(), w - 16, SMALL_SCALE),
                 x + 8, y + 38,
                 RANKED_ACCENT, SMALL_SCALE
             );
@@ -234,10 +243,11 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
         int btnX  = x + w - btnW - 4;
         int btnY  = y + QUEST_ROW_H / 2 - btnH / 2;
 
-        if (quest.completed() && !quest.claimed()) {
+        if (claimable) {
             // "Resgatar" button
-            boolean hovered = mouseX >= btnX && mouseX < btnX + btnW
+            boolean btnHovered = mouseX >= btnX && mouseX < btnX + btnW
                 && mouseY >= btnY && mouseY < btnY + btnH;
+            boolean hovered = rowHovered || btnHovered;
 
             int btnBg = hovered
                 ? mix(SUCCESS_ACCENT, color(255, 255, 255, 255), 0.2f)
@@ -260,7 +270,8 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
                 color(255, 255, 255, 255), SMALL_SCALE
             );
 
-            claimAreas.add(new ClaimArea(quest.questId(), btnX, btnY, btnW, btnH));
+            // Register the whole row as the clickable area
+            claimAreas.add(new ClaimArea(quest.questId(), x, y, w, QUEST_ROW_H));
 
         } else if (quest.claimed()) {
             // "Resgatado" label
@@ -283,7 +294,7 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
             drawCenteredScaledText(
                 graphics, pctTxt,
                 chipX + chipW / 2, chipY2 + 3,
-                TEXT_DIM, SMALL_SCALE
+                TEXT_PRIMARY, SMALL_SCALE
             );
         }
     }
@@ -349,8 +360,8 @@ public class ArenaQuestsScreen extends ArenaScreenBase {
         if (questCount == 0) {
             return SECTION_HDR_H + 28; // header + "no quests" message
         }
-        // header + rows + row gaps + bottom padding
-        return SECTION_HDR_H + 2
+        // header + top padding + rows + row gaps + bottom padding
+        return SECTION_HDR_H + 4
             + questCount * QUEST_ROW_H
             + (questCount - 1) * ROW_GAP
             + SECTION_PAD;

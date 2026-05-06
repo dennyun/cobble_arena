@@ -68,28 +68,50 @@ public final class ArenaCommands {
                         serverStatus(ctx.getSource())
                     )
                 )
-                // /arena queue [format]
+                // /arena ranqueada [format]
                 .then(
-                    CommandManager.literal("queue")
-                        .executes(ctx -> queueDefault(ctx.getSource()))
+                    CommandManager.literal("ranqueada")
                         .then(
                             CommandManager.argument(
                                 "format",
                                 StringArgumentType.string()
                             )
                                 .suggests((ctx, builder) -> {
-                                    for (ArenaLadder ladder : ArenaLadder.values()) {
-                                        builder.suggest(ladder.getId());
-                                    }
+                                    builder.suggest("solo");
+                                    builder.suggest("duplas");
+                                    builder.suggest("triplas");
+                                    builder.suggest("monotype");
                                     return builder.buildFuture();
                                 })
                                 .executes(ctx ->
-                                    queueForLadder(
+                                    queueForFormat(
                                         ctx.getSource(),
-                                        StringArgumentType.getString(
-                                            ctx,
-                                            "format"
-                                        )
+                                        StringArgumentType.getString(ctx, "format"),
+                                        true
+                                    )
+                                )
+                        )
+                )
+                // /arena casual [format]
+                .then(
+                    CommandManager.literal("casual")
+                        .then(
+                            CommandManager.argument(
+                                "format",
+                                StringArgumentType.string()
+                            )
+                                .suggests((ctx, builder) -> {
+                                    builder.suggest("solo");
+                                    builder.suggest("duplas");
+                                    builder.suggest("triplas");
+                                    builder.suggest("monotype");
+                                    return builder.buildFuture();
+                                })
+                                .executes(ctx ->
+                                    queueForFormat(
+                                        ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "format"),
+                                        false
                                     )
                                 )
                         )
@@ -100,10 +122,10 @@ public final class ArenaCommands {
                         leaveQueue(ctx.getSource())
                     )
                 )
-                // /arena leavequeue (alias)
+                // /arena sair
                 .then(
-                    CommandManager.literal("leavequeue").executes(ctx ->
-                        leaveQueue(ctx.getSource())
+                    CommandManager.literal("sair").executes(ctx ->
+                        leaveArena(ctx.getSource())
                     )
                 )
                 // /arena spectate
@@ -128,63 +150,10 @@ public final class ArenaCommands {
                             )
                         )
                 )
-                // /arena leaderboard [ladder]
-                .then(
-                    CommandManager.literal("leaderboard")
-                        .executes(ctx -> leaderboard(ctx.getSource(), null))
-                        .then(
-                            CommandManager.argument(
-                                "ladder",
-                                StringArgumentType.string()
-                            )
-                                .suggests((ctx, builder) -> {
-                                    for (ArenaLadder ladder : ArenaLadder.getActiveRankedLadders()) {
-                                        builder.suggest(ladder.getId());
-                                    }
-                                    return builder.buildFuture();
-                                })
-                                .executes(ctx ->
-                                    leaderboard(
-                                        ctx.getSource(),
-                                        StringArgumentType.getString(
-                                            ctx,
-                                            "ladder"
-                                        )
-                                    )
-                                )
-                        )
-                )
-                // /arena formats
-                .then(
-                    CommandManager.literal("formats").executes(ctx ->
-                        listFormats(ctx.getSource())
-                    )
-                )
-                // /arena rules [format]
+                // /arena rules
                 .then(
                     CommandManager.literal("rules")
                         .executes(ctx -> listRules(ctx.getSource(), null))
-                        .then(
-                            CommandManager.argument(
-                                "format",
-                                StringArgumentType.string()
-                            )
-                                .suggests((ctx, builder) -> {
-                                    for (ArenaLadder ladder : ArenaLadder.values()) {
-                                        builder.suggest(ladder.getId());
-                                    }
-                                    return builder.buildFuture();
-                                })
-                                .executes(ctx ->
-                                    listRules(
-                                        ctx.getSource(),
-                                        StringArgumentType.getString(
-                                            ctx,
-                                            "format"
-                                        )
-                                    )
-                                )
-                        )
                 )
                 // /arena season
                 .then(
@@ -233,6 +202,12 @@ public final class ArenaCommands {
                             )
                     )
                 )
+                // /arena reload
+                .then(
+                    CommandManager.literal("reload")
+                        .requires(source -> source.hasPermissionLevel(2))
+                        .executes(ctx -> reloadServer(ctx.getSource()))
+                )
         );
     }
 
@@ -248,6 +223,22 @@ public final class ArenaCommands {
             return 0;
         }
         ArenaAccessService.openMainGui(player);
+        return 1;
+    }
+
+    /** Reloads the server configuration in real-time. */
+    private static int reloadServer(ServerCommandSource source) {
+        if (source.getServer() != null) {
+            ArenaServerConfig.getInstance().initialize(source.getServer());
+            // Re-read quests from quests.json
+            QuestManager.getInstance().initialize(source.getServer());
+            // Sync all quests to connected players so the UI is updated immediately
+            QuestManager.getInstance().syncAllPlayers(source.getServer());
+            source.getServer().getPlayerManager().broadcast(
+                Text.literal("§a§l[Cobblemon Arena] §r§aConfigurações recarregadas com sucesso!"),
+                false
+            );
+        }
         return 1;
     }
 
@@ -295,47 +286,44 @@ public final class ArenaCommands {
         return 1;
     }
 
-    /** Joins the default ranked ladder queue. */
-    private static int queueDefault(ServerCommandSource source) {
-        ServerPlayerEntity player = asPlayer(source);
-        if (player == null) {
-            source.sendError(
-                Text.literal("§cApenas jogadores podem usar este comando.")
-            );
-            return 0;
-        }
-        MatchmakingQueue.getInstance().joinQueue(
-            player,
-            ArenaLadder.defaultRanked()
-        );
-        return 1;
-    }
-
-    /** Joins the queue for a specific ladder by ID. */
-    private static int queueForLadder(
+    /** Joins the queue for a mapped format alias. */
+    private static int queueForFormat(
         ServerCommandSource source,
-        String ladderId
+        String formatAlias,
+        boolean isRanked
     ) {
         ServerPlayerEntity player = asPlayer(source);
         if (player == null) {
-            source.sendError(
-                Text.literal("§cApenas jogadores podem usar este comando.")
-            );
+            source.sendError(Text.literal("§cApenas jogadores podem usar este comando."));
             return 0;
         }
-        ArenaLadder ladder = ArenaLadder.byId(ladderId);
+
+        String targetFormat = formatAlias.toLowerCase(java.util.Locale.ROOT);
+        String mapped = switch (targetFormat) {
+            case "solo" -> "singles";
+            case "duplas" -> "doubles";
+            case "triplas" -> "triples";
+            case "monotype" -> "monotype";
+            default -> targetFormat;
+        };
+
+        ArenaLadder ladder = null;
+        List<ArenaLadder> laddersToSearch = isRanked ? ArenaLadder.getActiveRankedLadders() : ArenaLadder.getQuickPresets();
+        
+        for (ArenaLadder l : laddersToSearch) {
+            if (l.getBattleTypeId().equals(mapped)) {
+                ladder = l;
+                break; // prefer the first matching one, typically lv50 or whatever is active
+            }
+        }
+
         if (ladder == null) {
             source.sendError(
-                Text.literal(
-                    "§cFormato inválido: §f" +
-                        ladderId +
-                        "§c. " +
-                        "Use §f/arena formats §cpara ver as opções disponíveis."
-                )
+                Text.literal("§cFormato indisponível no momento: §f" + formatAlias)
             );
             return 0;
         }
-        MatchmakingQueue.getInstance().joinQueue(player, ladder);
+        MatchmakingQueue.getInstance().joinQueue(player, ladder, false);
         return 1;
     }
 
@@ -439,7 +427,7 @@ public final class ArenaCommands {
         source.sendFeedback(
             () ->
                 Text.literal(
-                    "§7Elo: §e" +
+                    "§7Pontos Rank (RP): §e" +
                         stats.getRankedRating(ladderId) +
                         "   §7Ranqueado: §a" +
                         stats.getRankedWins(ladderId) +
@@ -467,179 +455,33 @@ public final class ArenaCommands {
         return 1;
     }
 
-    /** Displays the ranked leaderboard for the specified (or default) ladder. */
-    private static int leaderboard(
-        ServerCommandSource source,
-        String ladderId
-    ) {
-        String resolvedId = (ladderId == null || ladderId.isBlank())
-            ? ArenaServerConfig.getInstance().getRankedLadder().getId()
-            : ladderId;
 
-        ArenaLadder ladder = ArenaLadder.byId(resolvedId);
-        String ladderName =
-            ladder != null ? ladder.getDisplayName() : resolvedId;
-
-        List<PlayerStats> top = StatsManager.getInstance().getTopPlayers(
-            resolvedId,
-            10
-        );
-
-        source.sendFeedback(
-            () ->
-                Text.literal(
-                    "§6━━━ §lLeaderboard — §f" + ladderName + " §6━━━"
-                ),
-            false
-        );
-
-        if (top.isEmpty()) {
-            source.sendFeedback(
-                () ->
-                    Text.literal(
-                        "§8Nenhuma partida ranqueada registrada ainda."
-                    ),
-                false
-            );
-            return 1;
-        }
-
-        for (int i = 0; i < top.size(); i++) {
-            PlayerStats entry = top.get(i);
-            int pos = i + 1;
-            String medal = switch (pos) {
-                case 1 -> "§6#1 ";
-                case 2 -> "§7#2 ";
-                case 3 -> "§c#3 ";
-                default -> "§8#" + pos + " ";
-            };
-            source.sendFeedback(
-                () ->
-                    Text.literal(
-                        medal +
-                            "§f" +
-                            entry.getPlayerName() +
-                            " §7— §e" +
-                            entry.getRankedRating(resolvedId) +
-                            " Elo" +
-                            " §7(§a" +
-                            entry.getRankedWins(resolvedId) +
-                            "§7V §c" +
-                            entry.getRankedLosses(resolvedId) +
-                            "§7D)"
-                    ),
-                false
-            );
-        }
-        return 1;
-    }
-
-    /** Lists all available battle formats (ranked and quick). */
-    private static int listFormats(ServerCommandSource source) {
-        source.sendFeedback(
-            () -> Text.literal("§6━━━ §lFormatos Disponíveis §6━━━"),
-            false
-        );
-
-        List<ArenaLadder> rankedLadders = ArenaLadder.getActiveRankedLadders();
-        if (!rankedLadders.isEmpty()) {
-            source.sendFeedback(
-                () -> Text.literal("§e§lRanqueado§r§8:"),
-                false
-            );
-            for (ArenaLadder l : rankedLadders) {
-                source.sendFeedback(
-                    () ->
-                        Text.literal(
-                            "  §f" + l.getId() + " §8— §7" + l.getDisplayName()
-                        ),
-                    false
-                );
-            }
-        }
-
-        List<ArenaLadder> quickLadders = ArenaLadder.getQuickPresets();
-        if (!quickLadders.isEmpty()) {
-            source.sendFeedback(() -> Text.literal("§b§lRápido§r§8:"), false);
-            for (ArenaLadder l : quickLadders) {
-                source.sendFeedback(
-                    () ->
-                        Text.literal(
-                            "  §f" + l.getId() + " §8— §7" + l.getDisplayName()
-                        ),
-                    false
-                );
-            }
-        }
-
-        source.sendFeedback(
-            () ->
-                Text.literal(
-                    "§8Use §7/arena queue <formato> §8para entrar na fila."
-                ),
-            false
-        );
-        return 1;
-    }
 
     /**
-     * Displays format rules. If no format is specified, prints a summary of all
-     * active ranked ladder rules. Otherwise prints the full rule list for the
-     * requested ladder.
+     * Displays format rules. Prints a summary of all
+     * active ranked ladder rules.
      */
-    private static int listRules(ServerCommandSource source, String ladderId) {
-        if (ladderId == null || ladderId.isBlank()) {
-            source.sendFeedback(
-                () -> Text.literal("§6━━━ §lResumo das Regras §6━━━"),
-                false
-            );
-            for (ArenaLadder ladder : ArenaLadder.getActiveRankedLadders()) {
-                source.sendFeedback(
-                    () ->
-                        Text.literal(
-                            "§e" +
-                                ladder.getDisplayName() +
-                                "§8: §7" +
-                                ladder.getRulesSummary()
-                        ),
-                    false
-                );
-            }
+    private static int listRules(ServerCommandSource source, String ignored) {
+        source.sendFeedback(
+            () -> Text.literal("§6━━━ §lResumo das Regras §6━━━"),
+            false
+        );
+        for (ArenaLadder ladder : ArenaLadder.getActiveRankedLadders()) {
             source.sendFeedback(
                 () ->
                     Text.literal(
-                        "§8Use §7/arena rules <formato> §8para ver as regras completas."
+                        "§e" +
+                            ladder.getDisplayName() +
+                            "§8: §7" +
+                            ladder.getRulesSummary()
                     ),
                 false
             );
-            return 1;
-        }
-
-        ArenaLadder ladder = ArenaLadder.byId(ladderId);
-        if (ladder == null) {
-            source.sendError(
-                Text.literal(
-                    "§cFormato inválido: §f" +
-                        ladderId +
-                        "§c. " +
-                        "Use §f/arena formats §cpara ver as opções."
-                )
-            );
-            return 0;
-        }
-
-        source.sendFeedback(
-            () ->
-                Text.literal(
-                    "§6━━━ §lRegras — §f" + ladder.getDisplayName() + " §6━━━"
-                ),
-            false
-        );
-        for (String line : ladder.getRuleLines()) {
-            source.sendFeedback(() -> Text.literal("§7" + line), false);
         }
         return 1;
     }
+
+
 
     /** Displays information about the current ranked season. */
     private static int seasonInfo(ServerCommandSource source) {
@@ -823,6 +665,46 @@ public final class ArenaCommands {
             return 0;
         }
         return 1;
+    }
+
+    private static int leaveArena(ServerCommandSource source) {
+        ServerPlayerEntity player = asPlayer(source);
+        if (player == null) {
+            source.sendError(Text.literal("§cApenas jogadores podem usar este comando."));
+            return 0;
+        }
+
+        if (ArenaSpectatorManager.getInstance().isSpectatingArena(player)) {
+            ArenaSpectatorManager.getInstance().leaveSpectate(player);
+            return 1;
+        }
+
+        cobblemon.arena.battle.ArenaSession session = ArenaBattleManager.getInstance().getSession(player);
+        if (session != null) {
+            player.sendMessage(Text.literal("§cVoce usou o comando para sair e desistiu da partida!"), false);
+            ServerPlayerEntity opponent = session.getOpponent(player);
+            if (opponent != null) {
+                opponent.sendMessage(Text.literal("§aO oponente fugiu da arena. Voce venceu!"), false);
+            }
+            if (session.getBattleId() != null) {
+                com.cobblemon.mod.common.api.battles.model.PokemonBattle battle = com.cobblemon.mod.common.battles.BattleRegistry.getBattle(session.getBattleId());
+                if (battle != null && !battle.getEnded()) {
+                    for (com.cobblemon.mod.common.api.battles.model.actor.BattleActor actor : battle.getActors()) {
+                        if (actor instanceof com.cobblemon.mod.common.battles.actor.PlayerBattleActor pa && player.getUuid().equals(pa.getUuid())) {
+                            try {
+                                pa.setActionResponses(java.util.List.of(new com.cobblemon.mod.common.battles.ForfeitActionResponse()));
+                            } catch (Exception e) {}
+                            return 1;
+                        }
+                    }
+                }
+            }
+            ArenaBattleManager.getInstance().endArenaForPlayer(player);
+            return 1;
+        }
+
+        source.sendError(Text.literal("§cVoce nao esta em uma arena no momento."));
+        return 0;
     }
 
     // ── Utility ───────────────────────────────────────────────────────────────

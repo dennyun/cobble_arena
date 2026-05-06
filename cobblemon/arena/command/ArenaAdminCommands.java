@@ -672,7 +672,7 @@ public final class ArenaAdminCommands {
                     "§7Posição no ranking: §f" +
                         (rank > 0
                             ? "#" + rank + " de " + totalRanked
-                            : "Sem rank")
+                            : "Iniciante")
                 ),
             false
         );
