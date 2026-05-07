@@ -152,11 +152,6 @@ public final class ArenaServerConfig {
                      snapshot.rankedLadders.get(0).level = normalizeLevel(loaded.rankedLevel);
                      snapshot.rankedLadders.get(0).name = buildDefaultName(snapshot.rankedLadders.get(0).format, snapshot.rankedLadders.get(0).level, 1);
                   }
-               } else if (shouldMigrateLegacyRankedLadders(loaded)) {
-                  snapshot.activeRankedLadderCount = createDefaultRankedLadders().size();
-                  snapshot.rankedLadders = createDefaultRankedLadders();
-                  migratedLegacyRankedLadders = true;
-                  CobblemonArena.LOGGER.info("Configuracao legada da ladder ranqueada da Arena atualizada para rotacao predefinida de 8 slots");
                } else {
                   snapshot.rankedLadders = copyRankedLadders(loaded.rankedLadders);
                }
@@ -633,36 +628,6 @@ public final class ArenaServerConfig {
       }
    }
 
-   private static boolean shouldMigrateLegacyRankedLadders(ArenaServerConfig.StoredConfig loaded) {
-      if (loaded != null && loaded.rankedLadders != null) {
-         for (ArenaServerConfig.RankedLadderConfig l : loaded.rankedLadders) {
-            if (l.name != null && (l.name.equals("OU") || l.name.equals("Ubers") || l.name.equals("UU") || l.name.equals("RU"))) {
-               return true;
-            }
-         }
-      }
-
-      if (loaded != null && loaded.rankedLadders != null && loaded.rankedLadders.size() == 1 && loaded.activeRankedLadderCount <= 1) {
-         ArenaServerConfig.RankedLadderConfig ladder = normalizeSingleLadder(loaded.rankedLadders.get(0), 1);
-         if (!ArenaRankedPreset.CUSTOM.getKey().equals(ladder.presetKey)) {
-            return false;
-         } else if ("Singles".equals(ladder.format)
-            && "50".equals(ladder.level)
-            && !ladder.allowRestrictedPokemon
-            && ladder.enforceSpeciesClause
-            && ladder.enforceItemClause
-            && ladder.bannedPokemon.isEmpty()
-            && ladder.bannedItems.isEmpty()
-            && ladder.bannedMoves.isEmpty()) {
-            String normalizedName = ladder.name == null ? "" : ladder.name.trim();
-            return normalizedName.isBlank() || "Ranked Singles Lv. 50".equals(normalizedName);
-         } else {
-            return false;
-         }
-      } else {
-         return false;
-      }
-   }
 
    private Path templateFileForName(String templateName) {
       String normalizedName = normalizeTemplateFileName(templateName);
